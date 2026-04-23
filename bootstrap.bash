@@ -20,14 +20,23 @@
 #      at bootstrap time — export it for future shells.
 #
 # Optional env vars:
-#   ANTHROPIC_API_KEY   Pre-approved in ~/.claude.json and exported from the
-#                       ~/.bashrc managed block.
-#   GH_TOKEN            Exported from the ~/.bashrc managed block. gh reads
-#                       it from the environment directly, and the github.com
-#                       credential helper we register below delegates to
-#                       `gh auth git-credential`, so git clone/push reuse it.
-#   GIT_AUTHOR_NAME     `git config --global user.name`.
-#   GIT_AUTHOR_EMAIL    `git config --global user.email`.
+#   ANTHROPIC_API_KEY    Pre-approved in ~/.claude.json and exported from the
+#                        ~/.bashrc managed block.
+#   GH_TOKEN             Exported from the ~/.bashrc managed block. gh reads
+#                        it from the environment directly, and the github.com
+#                        credential helper we register below delegates to
+#                        `gh auth git-credential`, so git clone/push reuse it.
+#   GIT_AUTHOR_NAME      `git config --global user.name`.
+#   GIT_AUTHOR_EMAIL     `git config --global user.email`.
+#   CLAUDE_TRUSTED_DIRS  Colon-separated list of absolute directory paths to
+#                        pre-accept the "Do you trust the files in this
+#                        folder?" dialog for. Each path is seeded into
+#                        ~/.claude.json as
+#                        projects["<path>"].hasTrustDialogAccepted=true.
+#                        The trust dialog is per-directory and is NOT
+#                        suppressed by --dangerously-skip-permissions,
+#                        CLAUDE_CODE_SANDBOXED, or bypassPermissions — so
+#                        unattended starts in a fresh cwd need this.
 #
 # Can be run from a local checkout or piped via `curl ... | bash`. Safe to
 # re-run: existing settings.json and .claude.json are backed up before
@@ -133,23 +142,31 @@ JSON
 }
 
 # ---------------------------------------------------------------------------
-# 4. Skip the first-run onboarding (theme prompt) AND pre-approve the
-# ANTHROPIC_API_KEY fingerprint if one is set.
+# 4. Skip the first-run onboarding (theme prompt), pre-approve the
+# ANTHROPIC_API_KEY fingerprint if one is set, and pre-accept the "Do you
+# trust the files in this folder?" dialog for any paths in
+# CLAUDE_TRUSTED_DIRS (colon-separated).
 #
-# Both gates live in ~/.claude.json (NOT ~/.claude/settings.json):
+# All three gates live in ~/.claude.json (NOT ~/.claude/settings.json):
 #   - hasCompletedOnboarding controls the theme / color-scheme wizard
 #   - customApiKeyResponses.approved is a list of API-key fingerprints
 #     (last 20 chars of the key); if the runtime ANTHROPIC_API_KEY matches
 #     one, Claude starts without prompting for approval.
+#   - projects["<abs path>"].hasTrustDialogAccepted=true suppresses the
+#     per-directory trust prompt. There is no global skip for this — not
+#     --dangerously-skip-permissions, not CLAUDE_CODE_SANDBOXED, not
+#     bypassPermissions. Only -p (non-interactive mode) or this per-dir
+#     setting suppresses it.
 # We merge into an existing .claude.json rather than overwriting so we
 # preserve auth tokens, userID, and any prior approvals.
 # ---------------------------------------------------------------------------
 skip_onboarding() {
     command -v python3 >/dev/null 2>&1 || { log "ERROR: python3 required to edit ~/.claude.json"; exit 1; }
-    python3 - "${CLAUDE_JSON}" "${ANTHROPIC_API_KEY:-}" <<'PY'
+    python3 - "${CLAUDE_JSON}" "${ANTHROPIC_API_KEY:-}" "${CLAUDE_TRUSTED_DIRS:-}" <<'PY'
 import json, os, shutil, sys, time
 path = sys.argv[1]
 api_key = sys.argv[2] if len(sys.argv) > 2 else ""
+trusted_dirs_raw = sys.argv[3] if len(sys.argv) > 3 else ""
 data = {}
 if os.path.exists(path):
     backup = f"{path}.bak.{time.strftime('%Y%m%d-%H%M%S')}"
@@ -169,6 +186,16 @@ if api_key:
         approved.append(fp)
     resp.setdefault("rejected", [])
     print(f"[bootstrap] pre-approved ANTHROPIC_API_KEY fingerprint ...{fp}")
+trusted_dirs = [d for d in trusted_dirs_raw.split(":") if d]
+if trusted_dirs:
+    projects = data.setdefault("projects", {})
+    for d in trusted_dirs:
+        if not os.path.isabs(d):
+            print(f"[bootstrap] WARN: CLAUDE_TRUSTED_DIRS entry is not absolute, skipping: {d}", file=sys.stderr)
+            continue
+        entry = projects.setdefault(d, {})
+        entry["hasTrustDialogAccepted"] = True
+        print(f"[bootstrap] pre-accepted trust dialog for {d}")
 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, "w") as f:
     json.dump(data, f, indent=2)
