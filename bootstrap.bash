@@ -2,11 +2,10 @@
 # Bootstrap a fresh, non-interactive Claude Code install on a Linux host.
 #
 # Does the following, idempotently:
-#   1. Installs Claude Code (native installer) if not already present.
-#   2. Installs the Brev CLI (official install-latest.sh) if not already
-#      present.
-#   3. Installs the gh CLI from the official apt/dnf repo (system-wide;
-#      needs sudo).
+#   1. Installs / upgrades Claude Code via the native installer.
+#   2. Installs / upgrades the Brev CLI via the official install-latest.sh.
+#   3. Installs / upgrades the gh CLI from the official apt/dnf repo
+#      (system-wide; needs sudo).
 #   4. Writes ~/.claude/settings.json with unattended-mode defaults
 #      (bypassPermissions, sandboxed, max effort, opus-4-7).
 #   5. Pre-populates ~/.claude.json with hasCompletedOnboarding=true so the
@@ -59,30 +58,18 @@ need_sudo() {
 SUDO=$(need_sudo)
 
 # ---------------------------------------------------------------------------
-# 1. Install Claude Code (native installer) if missing.
+# 1. Install / upgrade Claude Code via the native installer.
 # ---------------------------------------------------------------------------
 install_claude() {
-    if command -v claude >/dev/null 2>&1; then
-        log "claude already installed: $(command -v claude) ($(claude --version 2>&1 | head -1))"
-        return
-    fi
-    if [[ -x "${HOME}/.local/bin/claude" ]]; then
-        log "claude found at ~/.local/bin/claude but not on PATH yet; will be picked up after PATH update"
-        return
-    fi
-    log "installing Claude Code via native installer..."
+    log "installing / updating Claude Code via native installer..."
     curl -fsSL https://claude.ai/install.sh | bash
 }
 
 # ---------------------------------------------------------------------------
-# 2. Install the Brev CLI via the official install-latest.sh if missing.
+# 2. Install / upgrade the Brev CLI via the official install-latest.sh.
 # ---------------------------------------------------------------------------
 install_brev() {
-    if command -v brev >/dev/null 2>&1; then
-        log "brev already installed: $(command -v brev)"
-        return
-    fi
-    log "installing Brev CLI via official installer..."
+    log "installing / updating Brev CLI via official installer..."
     curl -fsSL https://raw.githubusercontent.com/brevdev/brev-cli/main/bin/install-latest.sh | bash
 }
 
@@ -94,10 +81,6 @@ install_brev() {
 # credential helper wired up in configure_git() below actually works.
 # ---------------------------------------------------------------------------
 ensure_gh() {
-    if command -v gh >/dev/null 2>&1; then
-        log "gh already installed: $(gh --version 2>&1 | head -1)"
-        return
-    fi
     if [ -n "$SUDO" ] && ! sudo -n true 2>/dev/null; then
         warn "gh install needs sudo and passwordless sudo is not available; skipping"
         warn "install gh manually from https://cli.github.com/ and re-run"
