@@ -9,7 +9,6 @@ A single idempotent bash script that turns a fresh Linux host into a ready-to-us
    - Model pinned to `claude-opus-4-7` at max effort
    - Onboarding wizard skipped (no theme / color-scheme prompt on first launch)
    - `ANTHROPIC_API_KEY` pre-approved if provided (no first-run approval prompt)
-   - "Trust this folder?" dialog pre-accepted for any paths in `CLAUDE_TRUSTED_DIRS` (the dialog is per-directory and is **not** suppressed by `--dangerously-skip-permissions` or `bypassPermissions`)
    - `claude` aliased to `claude --dangerously-skip-permissions` in interactive shells
 2. **`gh` CLI** — latest release from the official `cli.github.com` apt/dnf repo (the distro-shipped `gh` predates `gh auth token` / `gh auth git-credential`).
 3. **git** — `user.name` / `user.email` set from env, and `gh` registered as the `github.com` credential helper so `git clone` / `git push` reuse the gh-stored token with no interactive prompt.
@@ -23,7 +22,6 @@ export ANTHROPIC_API_KEY=<your-anthropic-api-key>
 export GH_TOKEN=<your-github-token>
 export GIT_AUTHOR_NAME=<your-name>
 export GIT_AUTHOR_EMAIL=<your@email>
-export CLAUDE_TRUSTED_DIRS=/path/to/workdir   # colon-separated; optional
 curl -fsSL https://raw.githubusercontent.com/brycelelbach/unattended-brev-agent-bootstrap/main/bootstrap.bash | bash
 source ~/.bashrc
 ```
@@ -40,7 +38,6 @@ All optional. Anything unset is simply skipped.
 | `GH_TOKEN` | Exported from the `~/.bashrc` managed block. `gh` reads it from the environment directly, and since `gh auth git-credential` is registered as the `github.com` credential helper, `git clone` / `git push` reuse it automatically. |
 | `GIT_AUTHOR_NAME` | `git config --global user.name` |
 | `GIT_AUTHOR_EMAIL` | `git config --global user.email` |
-| `CLAUDE_TRUSTED_DIRS` | Colon-separated absolute paths. Each is seeded into `~/.claude.json` as `projects["<path>"].hasTrustDialogAccepted=true`, so `claude` launched in that directory skips the "Do you trust the files in this folder?" prompt. Per-directory is the only way — there is no global setting for this, and `--dangerously-skip-permissions` does **not** suppress it. |
 
 ## What the script touches
 
@@ -48,8 +45,8 @@ All optional. Anything unset is simply skipped.
 | --- | --- |
 | `~/.local/bin/claude` (+ `~/.local/bin/env`) | Written by the Claude Code native installer. |
 | `~/.claude/settings.json` | Overwritten with unattended-mode defaults. Existing file backed up to `settings.json.bak.<timestamp>`. |
-| `~/.claude.json` | Merged — `hasCompletedOnboarding=true`, optional `customApiKeyResponses.approved` entry, and optional `projects["<dir>"].hasTrustDialogAccepted=true` for each path in `CLAUDE_TRUSTED_DIRS`. Existing file backed up to `.claude.json.bak.<timestamp>`. |
-| `~/.bashrc` | Managed block between `# >>> unattended-brev-agent-bootstrap >>>` and `# <<< unattended-brev-agent-bootstrap <<<`. Rewritten wholesale on every run. |
+| `~/.claude.json` | Merged — `hasCompletedOnboarding=true` and optional `customApiKeyResponses.approved` entry. Existing file backed up to `.claude.json.bak.<timestamp>`. |
+| `~/.bashrc` | Managed block between `# >>> unattended-claude-code bootstrap >>>` and `# <<< unattended-claude-code bootstrap <<<`. Rewritten wholesale on every run. |
 | `~/.gitconfig` | `user.name`, `user.email`, and `credential.https://github.com.helper`. |
 | System-wide | `gh` package, its apt/dnf source + signing keyring (requires `sudo`; script skips with a warning if passwordless `sudo` isn't available). |
 
