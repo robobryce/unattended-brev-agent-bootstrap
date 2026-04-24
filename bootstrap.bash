@@ -244,7 +244,7 @@ update_bashrc() {
             !skip { print }
         ' "${BASHRC}" > "$tmp"
         mv "$tmp" "${BASHRC}"
-        log "replaced existing unattended-claude-code block in ${BASHRC}"
+        log "replaced existing unattended-brev-agent-bootstrap block in ${BASHRC}"
     fi
     {
         printf '\n%s\n' "${BASHRC_MARKER_BEGIN}"
@@ -267,7 +267,7 @@ EOS
         fi
         printf '%s\n' "${BASHRC_MARKER_END}"
     } >> "${BASHRC}"
-    log "wrote unattended-claude-code block to ${BASHRC}"
+    log "wrote unattended-brev-agent-bootstrap block to ${BASHRC}"
 }
 
 main() {
