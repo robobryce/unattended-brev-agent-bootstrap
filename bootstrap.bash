@@ -2,6 +2,9 @@
 # Bootstrap a fresh, non-interactive Claude Code install on a Linux host.
 #
 # Does the following, idempotently:
+#   0. Installs any missing base dependencies (curl, python3, git, sudo,
+#      ca-certificates) via apt-get, so the script runs on bare container
+#      images that ship only apt-get. Skipped silently if already present.
 #   1. Installs / upgrades Claude Code via the native installer.
 #   2. Installs / upgrades the Brev CLI via the official install-latest.sh.
 #   3. Installs / upgrades the gh CLI from the official apt repo
@@ -105,6 +108,44 @@ need_sudo() {
     if [ "$(id -u)" -eq 0 ]; then echo ""; else echo "sudo"; fi
 }
 SUDO=$(need_sudo)
+
+# ---------------------------------------------------------------------------
+# 0. Install base dependencies (curl / python3 / git / ca-certificates)
+# via apt-get. Bare container images (e.g. ubuntu:22.04) ship with
+# apt-get but nothing else, so we can't assume curl or python3 exist.
+# Skip silently if everything's already present — the common case on a
+# host with a developer-ish baseline.
+# ---------------------------------------------------------------------------
+install_base_deps() {
+    local needed=()
+    command -v curl    >/dev/null 2>&1 || needed+=(curl)
+    command -v python3 >/dev/null 2>&1 || needed+=(python3)
+    command -v git     >/dev/null 2>&1 || needed+=(git)
+    # The Brev installer (install-latest.sh) invokes `sudo` unconditionally;
+    # bare container images ship without sudo, so we install it even when
+    # running as root. Sudo as uid 0 is a no-op passthrough.
+    command -v sudo    >/dev/null 2>&1 || needed+=(sudo)
+    # HTTPS curl / apt fetches from cli.github.com need the CA bundle.
+    # Bare ubuntu images include it, but verify defensively.
+    [ -f /etc/ssl/certs/ca-certificates.crt ] || needed+=(ca-certificates)
+
+    if [ ${#needed[@]} -eq 0 ]; then
+        return
+    fi
+
+    if ! command -v apt-get >/dev/null 2>&1; then
+        warn "missing base deps (${needed[*]}) and apt-get is not available; install them manually and re-run"
+        return
+    fi
+    if [ -n "$SUDO" ] && ! sudo -n true 2>/dev/null; then
+        warn "missing base deps (${needed[*]}) and passwordless sudo is not available; install them manually and re-run"
+        return
+    fi
+
+    log "installing base deps: ${needed[*]}"
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -y
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${needed[@]}"
+}
 
 # ---------------------------------------------------------------------------
 # 1. Install / upgrade Claude Code via the native installer.
@@ -470,6 +511,7 @@ update_bashrc() {
 }
 
 main() {
+    install_base_deps
     install_claude
     install_brev
     ensure_gh
