@@ -161,7 +161,8 @@ ensure_gh() {
 write_settings() {
     mkdir -p "${CLAUDE_DIR}"
     if [[ -f "${SETTINGS_FILE}" ]]; then
-        local backup="${SETTINGS_FILE}.bak.$(date +%Y%m%d-%H%M%S)"
+        local backup
+        backup="${SETTINGS_FILE}.bak.$(date +%Y%m%d-%H%M%S)"
         cp "${SETTINGS_FILE}" "${backup}"
         log "backed up existing settings.json -> ${backup}"
     fi
@@ -233,7 +234,8 @@ PY
 skip_brev_onboarding() {
     mkdir -p "${BREV_DIR}"
     if [[ -f "${BREV_ONBOARDING}" ]]; then
-        local backup="${BREV_ONBOARDING}.bak.$(date +%Y%m%d-%H%M%S)"
+        local backup
+        backup="${BREV_ONBOARDING}.bak.$(date +%Y%m%d-%H%M%S)"
         cp "${BREV_ONBOARDING}" "${backup}"
         log "backed up existing onboarding.json -> ${backup}"
     fi
@@ -485,4 +487,6 @@ main() {
     log "done. Open a new shell (or 'source ~/.bashrc') so the PATH / alias take effect."
 }
 
-main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
+fi

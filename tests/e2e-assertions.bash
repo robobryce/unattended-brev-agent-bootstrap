@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+#
+# Post-bootstrap assertions. Assumes bootstrap.bash has just run under the
+# current HOME. Exits non-zero on the first failure.
+
+set -euo pipefail
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+pass() { echo "PASS: $*"; }
+
+CLAUDE_DIR="${HOME}/.claude"
+SETTINGS_FILE="${CLAUDE_DIR}/settings.json"
+CLAUDE_JSON="${HOME}/.claude.json"
+BREV_ONBOARDING="${HOME}/.brev/onboarding_step.json"
+BASHRC="${HOME}/.bashrc"
+
+# 1. settings.json is well-formed and has the expected shape.
+[ -f "$SETTINGS_FILE" ] || fail "settings.json not written"
+python3 - "$SETTINGS_FILE" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["permissions"]["defaultMode"] == "bypassPermissions", d
+assert d["skipDangerousModePermissionPrompt"] is True, d
+assert d["env"]["CLAUDE_CODE_SANDBOXED"] == "1", d
+assert d["effortLevel"] == "max", d
+assert d["model"].startswith("claude-"), d
+PY
+pass "settings.json written with unattended-mode defaults"
+
+# 2. .claude.json has onboarding flag set.
+[ -f "$CLAUDE_JSON" ] || fail ".claude.json not written"
+python3 - "$CLAUDE_JSON" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["hasCompletedOnboarding"] is True, d
+PY
+pass ".claude.json has hasCompletedOnboarding=true"
+
+# 3. Brev onboarding file is valid JSON.
+[ -f "$BREV_ONBOARDING" ] || fail "brev onboarding_step.json not written"
+python3 -c "import json; json.load(open('$BREV_ONBOARDING'))"
+pass "brev onboarding_step.json is valid JSON"
+
+# 4. Managed bashrc block is present exactly once.
+grep -q '# >>> autonomous-agent-bootstrap >>>' "$BASHRC" \
+    || fail "bashrc begin marker missing"
+grep -q '# <<< autonomous-agent-bootstrap <<<' "$BASHRC" \
+    || fail "bashrc end marker missing"
+begin_count=$(grep -c '^# >>> autonomous-agent-bootstrap >>>$' "$BASHRC")
+end_count=$(grep -c '^# <<< autonomous-agent-bootstrap <<<$' "$BASHRC")
+[ "$begin_count" -eq 1 ] || fail "expected 1 bashrc begin marker, got $begin_count"
+[ "$end_count" -eq 1 ]   || fail "expected 1 bashrc end marker, got $end_count"
+pass "bashrc managed block present exactly once"
+
+# 5. Provider-switch function is defined in the bashrc block.
+grep -q 'claude_code_switch_inference_provider()' "$BASHRC" \
+    || fail "provider-switch function not written"
+pass "claude_code_switch_inference_provider function written"
+
+# 6. Inner provider marker block is present with the expected value.
+grep -q 'AAB_CLAUDE_CODE_INFERENCE_PROVIDER=' "$BASHRC" \
+    || fail "provider variable not written"
+pass "AAB_CLAUDE_CODE_INFERENCE_PROVIDER set in bashrc"
+
+# 7. The bashrc block sources cleanly.
+bash -n "$BASHRC" || fail "bashrc has syntax errors"
+pass "bashrc parses cleanly"
+
+# 8. The binaries the bootstrap installed are on PATH (via ~/.local/bin).
+export PATH="$HOME/.local/bin:$PATH"
+command -v claude >/dev/null 2>&1 || fail "claude not on PATH after bootstrap"
+pass "claude binary installed and on PATH"
+command -v brev   >/dev/null 2>&1 || fail "brev not on PATH after bootstrap"
+pass "brev binary installed and on PATH"
+command -v gh     >/dev/null 2>&1 || fail "gh not on PATH after bootstrap"
+pass "gh binary installed"
+
+# 9. git identity was configured.
+[ "$(git config --global user.name)"  = "CI Bot" ]         || fail "git user.name not set"
+[ "$(git config --global user.email)" = "ci@example.com" ] || fail "git user.email not set"
+pass "git identity configured"
+
+# 10. gh credential helper is registered for github.com.
+gh_helper=$(git config --global --get 'credential.https://github.com.helper' || true)
+[ "$gh_helper" = '!gh auth git-credential' ] \
+    || fail "gh credential helper not registered (got: '$gh_helper')"
+pass "gh registered as github.com credential helper"
+
+echo "All e2e assertions passed."
