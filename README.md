@@ -15,6 +15,12 @@ A single idempotent bash script that turns a fresh Linux host into a ready-to-us
 3. **git** — `user.name` / `user.email` set from env, and `gh` registered as the `github.com` credential helper so `git clone` / `git push` reuse the gh-stored token with no interactive prompt.
 4. **Claude Code plugins** — marketplaces listed in [`claude_code_plugins.txt`](./claude_code_plugins.txt) are registered in `~/.claude/settings.json`'s `extraKnownMarketplaces`, and the plugins they declare are flipped on in `enabledPlugins`. Claude Code fetches them on next launch, no prompt. Defaults ship [agitentic](https://github.com/brycelelbach/agitentic) and [autocuda](https://github.com/brycelelbach/autocuda); add more by editing the file and re-running the bootstrap.
 
+## Requirements
+
+**To run the bootstrap:** Ubuntu/Debian (or Fedora/RHEL) host with `bash`, `curl`, `python3`, `git`, and `sudo` (passwordless is nicest — the script warns and skips the `gh` install otherwise). The `gh` CLI is installed by the script itself.
+
+**To run the tests** (see [Running the tests](#running-the-tests)): `bash`, `python3`, `curl`, `git` — plus `shellcheck` for lint, `bats` (≥1.2) for the unit suite, and `gitleaks` (pinned to v8.18.4 in CI) for the secret scan. The end-to-end job also needs `sudo` because it invokes `bootstrap.bash` for real.
+
 ## Quick start
 
 From a Brev VM or any Linux host, set your env vars and paste one of the following install recipes. All three write the same `~/.bashrc` block — they differ only in which credentials are populated and which provider is selected as the default.
@@ -128,3 +134,27 @@ Safe to re-run. Each run matches the current environment:
 - `settings.json` and `.claude.json` are backed up (timestamped `.bak`) before being rewritten.
 - `gh` and `claude` are skipped if already installed.
 - `git config --global` is only touched for variables that are set.
+
+## Running the tests
+
+All tests are driven by a single entry point, [`./test.bash`](./test.bash). `.github/workflows/ci.yml` calls the same flags, so "passes locally" == "will pass CI."
+
+```bash
+./test.bash              # lint + unit (default; fast, no side effects)
+./test.bash --lint       # bash -n + shellcheck
+./test.bash --unit       # bats suite in tests/
+./test.bash --e2e        # runs bootstrap.bash on THIS host + assertions — see warning below
+./test.bash --secrets    # gitleaks scan of full history + working tree
+./test.bash --all        # everything above, in order
+```
+
+**`--e2e` is destructive.** It invokes `bootstrap.bash` for real against the current `$HOME`: overwrites `~/.claude/settings.json`, rewrites the `~/.bashrc` managed block, modifies global git config, and installs `claude` / `brev` / `gh`. Only run it on a disposable VM or container (which is how CI exercises it).
+
+Install the test prerequisites on Ubuntu/Debian with:
+
+```bash
+sudo apt-get install -y bats shellcheck python3
+# gitleaks (v8.18.4, matching CI)
+curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz" \
+  | sudo tar -xz -C /usr/local/bin gitleaks
+```
