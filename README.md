@@ -19,18 +19,18 @@ A single idempotent bash script that turns a fresh Linux host into a ready-to-us
 
 **To run the bootstrap:**
 
-- Ubuntu/Debian (or Fedora/RHEL) host
-- `bash`, `curl`, `python3`, `git`
-- `sudo` — passwordless is nicest; the script warns and skips the `gh` install otherwise
-- The `gh` CLI is installed by the script itself
+- Ubuntu/Debian host with `bash` and `apt-get`
+- A bare `ubuntu:22.04` container image is a valid starting point — everything else (`curl`, `python3`, `git`, `sudo`, `ca-certificates`, and `gh`) is installed by the script itself on first run
+- Passwordless `sudo` (or running as root) — required so the script can install those packages; it warns and skips otherwise
 
 **To run the tests** (see [Running the tests](#running-the-tests)):
 
-- `bash`, `python3`, `curl`, `git`
+- `bash`
 - `shellcheck` — for lint
-- `bats` (≥1.2) — for the unit suite
+- `bats` (≥1.2) and `python3` — for the unit suite
 - `gitleaks` (pinned to v8.18.4 in CI) — for the secret scan
-- `sudo` — the end-to-end job invokes `bootstrap.bash` for real
+- `docker` — for the bare-container end-to-end check
+- The on-host `--e2e` job doesn't need anything beyond `bash`; the bootstrap it invokes installs its own prerequisites
 
 ## Quick start
 
@@ -155,11 +155,12 @@ All tests are driven by a single entry point, [`./test.bash`](./test.bash). `.gi
 ./test.bash --lint       # bash -n + shellcheck
 ./test.bash --unit       # bats suite in tests/
 ./test.bash --e2e        # runs bootstrap.bash on THIS host + assertions — see warning below
+./test.bash --docker     # same as --e2e, but inside a fresh ubuntu:22.04 container
 ./test.bash --secrets    # gitleaks scan of full history + working tree
-./test.bash --all        # everything above, in order
+./test.bash --all        # lint + unit + e2e + secrets, in order
 ```
 
-**`--e2e` is destructive.** It invokes `bootstrap.bash` for real against the current `$HOME`: overwrites `~/.claude/settings.json`, rewrites the `~/.bashrc` managed block, modifies global git config, and installs `claude` / `brev` / `gh`. Only run it on a disposable VM or container (which is how CI exercises it).
+**`--e2e` is destructive.** It invokes `bootstrap.bash` for real against the current `$HOME`: overwrites `~/.claude/settings.json`, rewrites the `~/.bashrc` managed block, modifies global git config, and installs `claude` / `brev` / `gh`. Only run it on a disposable VM or container (which is how CI exercises it). **`--docker` is the safe alternative** — it does the same run inside a throwaway `ubuntu:22.04` container, and also serves as the stronger check that `bootstrap.bash` works against a bare image with nothing pre-installed.
 
 Install the test prerequisites on Ubuntu/Debian with:
 

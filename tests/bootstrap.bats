@@ -164,3 +164,30 @@ PY
     # called by a main() invocation at source time.
     [ ! -f "$SETTINGS_FILE" ]
 }
+
+@test "install_base_deps is a no-op when all required commands are present" {
+    # Runs on a host (or CI runner) where curl / python3 / git / sudo and
+    # the CA bundle are preinstalled — the dev-box / runner default.
+    for cmd in curl python3 git sudo; do
+        command -v "$cmd" >/dev/null || skip "precondition: $cmd must exist on the test host"
+    done
+    [ -f /etc/ssl/certs/ca-certificates.crt ] || skip "precondition: ca-certificates bundle must exist"
+
+    run install_base_deps
+    [ "$status" -eq 0 ]
+    # Silent: no "installing base deps:" log line, and no apt-get invocation.
+    [[ "$output" != *"installing base deps:"* ]]
+}
+
+@test "install_base_deps warns and skips when apt-get is unavailable" {
+    # Empty PATH → command -v fails for every external tool, including
+    # apt-get. Exercises the "bare host without apt-get" branch where the
+    # function must not blow up, just warn and return.
+    local empty_bin="$TEST_HOME/empty-bin"
+    mkdir -p "$empty_bin"
+    PATH="$empty_bin" run install_base_deps
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"apt-get is not available"* ]]
+    # Should NOT claim to be installing anything.
+    [[ "$output" != *"installing base deps:"* ]]
+}

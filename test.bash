@@ -11,8 +11,12 @@
 #                            rewrites the ~/.bashrc managed block, modifies
 #                            global git config, and installs claude / brev
 #                            / gh. Only run on a disposable machine.
+#   ./test.bash --docker     same as --e2e, but inside a fresh ubuntu:22.04
+#                            docker container — safe to run anywhere with
+#                            docker available, and the stronger check that
+#                            bootstrap works on a bare image.
 #   ./test.bash --secrets    gitleaks scan of full history + working tree
-#   ./test.bash --all        everything above, in order
+#   ./test.bash --all        lint + unit + e2e + secrets, in order
 #   ./test.bash -h|--help    print this usage
 
 set -euo pipefail
@@ -42,10 +46,9 @@ run_unit() {
 
 run_e2e() {
     echo "=== e2e (runs bootstrap.bash on this host — DESTRUCTIVE) ==="
+    # bootstrap.bash's install_base_deps step installs curl / python3 /
+    # git / sudo / ca-certificates itself, so we only need bash here.
     need bash
-    need python3
-    need curl
-    need git
     : "${GIT_AUTHOR_NAME:=CI Bot}"
     : "${GIT_AUTHOR_EMAIL:=ci@example.com}"
     : "${AAB_CLAUDE_CODE_MODEL:=claude-opus-4-7}"
@@ -67,8 +70,11 @@ run_e2e() {
     block=$(mktemp)
     awk '/^# >>> autonomous-agent-bootstrap >>>$/,/^# <<< autonomous-agent-bootstrap <<<$/' \
         "$HOME/.bashrc" > "$block"
+    # No '-u' here: claude_code_switch_inference_provider re-sources
+    # ~/.bashrc at the end, and the default Ubuntu root bashrc references
+    # $PS1 unconditionally — which is unset in this non-interactive shell.
     bash -c "
-        set -euo pipefail
+        set -eo pipefail
         # shellcheck disable=SC1090
         . '$block'
         claude_code_switch_inference_provider third-party
@@ -78,6 +84,25 @@ run_e2e() {
     "
     rm -f "$block"
     echo "=== e2e passed ==="
+}
+
+run_docker_e2e() {
+    echo "=== docker e2e (bootstrap in fresh ubuntu:22.04 container) ==="
+    need docker
+    # Mount the repo read-only and copy it inside the container so the
+    # bootstrap works against a pristine tree it can write into.
+    # Forward GITHUB_TOKEN (if set) so the Brev installer's release-info
+    # call to api.github.com isn't rate-limited in CI; -e X without a value
+    # is a no-op when the caller doesn't export it.
+    docker run --rm \
+        -e GITHUB_TOKEN \
+        -v "$HERE:/src:ro" \
+        ubuntu:22.04 \
+        bash -c 'set -euo pipefail
+            cp -r /src /work
+            cd /work
+            ./test.bash --e2e'
+    echo "=== docker e2e passed ==="
 }
 
 run_secrets() {
@@ -102,6 +127,7 @@ for arg in "$@"; do
         --lint)    run_lint ;;
         --unit)    run_unit ;;
         --e2e)     run_e2e ;;
+        --docker)  run_docker_e2e ;;
         --secrets) run_secrets ;;
         --all)
             run_lint

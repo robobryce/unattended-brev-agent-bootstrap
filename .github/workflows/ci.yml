@@ -39,7 +39,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: ./test.bash --e2e
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./test.bash --e2e
+
+  docker-e2e:
+    name: End-to-end bootstrap (fresh ubuntu:22.04 container)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ./test.bash --docker
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./test.bash --docker
 
   secret-scan:
     name: Secret scan (gitleaks)
