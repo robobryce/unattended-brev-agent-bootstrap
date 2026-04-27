@@ -1,5 +1,9 @@
 name: CI
 
+# Mirrors ./test.bash locally — each job installs the prerequisites it needs
+# and then delegates to a single ./test.bash flag, so there is one source of
+# truth for "what counts as passing tests."
+
 on:
   push:
     branches: [main]
@@ -14,12 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: bash -n syntax check
-        run: bash -n bootstrap.bash
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - name: Run shellcheck
-        run: shellcheck -S warning bootstrap.bash tests/e2e-assertions.bash
+      - name: ./test.bash --lint
+        run: ./test.bash --lint
 
   unit:
     name: Unit tests (bats)
@@ -28,44 +30,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install bats + python3
         run: sudo apt-get update && sudo apt-get install -y bats python3
-      - name: Run bats tests
-        run: bats tests/bootstrap.bats
+      - name: ./test.bash --unit
+        run: ./test.bash --unit
 
   e2e:
     name: End-to-end bootstrap
     runs-on: ubuntu-latest
-    env:
-      GIT_AUTHOR_NAME: CI Bot
-      GIT_AUTHOR_EMAIL: ci@example.com
-      AAB_CLAUDE_CODE_MODEL: claude-opus-4-7
-      AAB_CLAUDE_CODE_INFERENCE_PROVIDER: anthropic
     steps:
       - uses: actions/checkout@v4
-      - name: Run bootstrap.bash
-        run: bash bootstrap.bash
-      - name: Verify post-conditions
-        run: bash tests/e2e-assertions.bash
-      - name: Re-run bootstrap (idempotency)
-        run: bash bootstrap.bash
-      - name: Verify post-conditions after re-run
-        run: bash tests/e2e-assertions.bash
-      - name: Exercise claude_code_switch_inference_provider
-        run: |
-          set -euo pipefail
-          # The default Ubuntu ~/.bashrc returns early for non-interactive
-          # shells, so extract just the managed block and source that to
-          # get at the function.
-          awk '/^# >>> autonomous-agent-bootstrap >>>$/,/^# <<< autonomous-agent-bootstrap <<<$/' \
-            "$HOME/.bashrc" > /tmp/aab-block.bash
-          bash -c '
-            set -euo pipefail
-            # shellcheck disable=SC1091
-            . /tmp/aab-block.bash
-            claude_code_switch_inference_provider third-party
-            grep -q "AAB_CLAUDE_CODE_INFERENCE_PROVIDER=\"third-party\"" "$HOME/.bashrc"
-            claude_code_switch_inference_provider anthropic
-            grep -q "AAB_CLAUDE_CODE_INFERENCE_PROVIDER=\"anthropic\"" "$HOME/.bashrc"
-          '
+      - name: ./test.bash --e2e
+        run: ./test.bash --e2e
 
   secret-scan:
     name: Secret scan (gitleaks)
@@ -79,7 +53,5 @@ jobs:
           VERSION=8.18.4
           curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
             | sudo tar -xz -C /usr/local/bin gitleaks
-      - name: Scan full git history
-        run: gitleaks detect --source . --redact --verbose --exit-code 1
-      - name: Scan working tree (uncommitted files too)
-        run: gitleaks detect --source . --no-git --redact --verbose --exit-code 1
+      - name: ./test.bash --secrets
+        run: ./test.bash --secrets
