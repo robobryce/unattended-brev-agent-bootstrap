@@ -676,11 +676,13 @@ PY
     [ "$end_count" -eq 1 ]
 }
 
-@test "update_bashrc puts launcher directory on PATH without aliases" {
-    update_bashrc
+@test "update_bashrc puts launcher directory on PATH and aliases selected wrappers" {
+    AAB_CLAUDE_CODE_INFERENCE_PROVIDER="third-party-deepseek" \
+        AAB_CODEX_INFERENCE_PROVIDER="third-party-openai" \
+        update_bashrc
     grep -q 'export PATH="$HOME/.local/bin:$PATH"' "$BASHRC"
-    ! grep -q '^alias claude=' "$BASHRC"
-    ! grep -q '^alias codex=' "$BASHRC"
+    grep -q 'alias claude="$HOME/.local/bin/claude-third-party-deepseek"' "$BASHRC"
+    grep -q 'alias codex="$HOME/.local/bin/codex-third-party-openai"' "$BASHRC"
 }
 
 @test "update_bashrc exports DEBUG_SDK=1 (turns on Claude Code debug logging)" {

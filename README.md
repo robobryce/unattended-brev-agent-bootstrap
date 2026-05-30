@@ -56,18 +56,18 @@ You can also pass the same keys as exported environment variables or pipe config
 
 ## Provider Selection
 
-`AAB_CLAUDE_CODE_INFERENCE_PROVIDER` controls which wrapper `claude` points at:
+`AAB_CLAUDE_CODE_INFERENCE_PROVIDER` controls which wrapper `claude` points at and which wrapper the interactive shell alias invokes:
 
 - `first-party`
 - `third-party-anthropic`
 - `third-party-deepseek`
 
-`AAB_CODEX_INFERENCE_PROVIDER` controls which wrapper `codex` points at:
+`AAB_CODEX_INFERENCE_PROVIDER` controls which wrapper `codex` points at and which wrapper the interactive shell alias invokes:
 
 - `first-party`
 - `third-party-openai`
 
-The explicit wrappers are always installed, so you can run `claude-third-party-deepseek` or `codex-third-party-openai` directly regardless of the default symlink. To change the unqualified `claude` or `codex` command, update your config and re-run the bootstrap.
+The explicit wrappers are always installed, so you can run `claude-third-party-deepseek` or `codex-third-party-openai` directly regardless of the default symlink. To change the unqualified `claude` or `codex` command, update your config and re-run the bootstrap. AAB also writes `claude` and `codex` aliases in `~/.bashrc` that call the selected wrapper files directly, which keeps interactive SSH sessions on the AAB wrappers even if an upstream installer later rewrites the unqualified symlink.
 
 ### Third-Party Claude Examples
 
@@ -106,7 +106,7 @@ All variables are optional unless you select a provider that needs its credentia
 
 | Variable | Effect |
 | --- | --- |
-| `AAB_CLAUDE_CODE_INFERENCE_PROVIDER` | `first-party`, `third-party-anthropic`, or `third-party-deepseek`. Selects the `claude` symlink target. Defaults to `first-party`. |
+| `AAB_CLAUDE_CODE_INFERENCE_PROVIDER` | `first-party`, `third-party-anthropic`, or `third-party-deepseek`. Selects the `claude` symlink and interactive alias target. Defaults to `first-party`. |
 | `AAB_CLAUDE_CODE_FIRST_PARTY_API_KEY` | Anthropic first-party API key. Stored in `~/.aab/.env`; mapped to `ANTHROPIC_API_KEY` by `claude-first-party`. |
 | `AAB_CLAUDE_CODE_FIRST_PARTY_MODEL` | Claude first-party model. Defaults to `claude-opus-4-7`. |
 | `AAB_CLAUDE_CODE_FIRST_PARTY_HAIKU_MODEL` | First-party haiku-tier model. Defaults to `claude-haiku-4-5`. |
@@ -125,7 +125,7 @@ All variables are optional unless you select a provider that needs its credentia
 | `AAB_CLAUDE_CODE_THIRD_PARTY_DEEPSEEK_SONNET_MODEL` | DeepSeek sonnet-tier model. |
 | `AAB_CLAUDE_CODE_THIRD_PARTY_DEEPSEEK_OPUS_MODEL` | DeepSeek opus-tier model. |
 | `AAB_CLAUDE_CODE_EFFORT` | Claude Code effort level. Defaults to `max`. |
-| `AAB_CODEX_INFERENCE_PROVIDER` | `first-party` or `third-party-openai`. Selects the `codex` symlink target. Defaults to `first-party`. |
+| `AAB_CODEX_INFERENCE_PROVIDER` | `first-party` or `third-party-openai`. Selects the `codex` symlink and interactive alias target. Defaults to `first-party`. |
 | `AAB_CODEX_FIRST_PARTY_API_KEY` | OpenAI API key for first-party Codex. Stored in `~/.aab/.env`, mapped to `OPENAI_API_KEY` by `codex-first-party`, and used for `codex login --with-api-key`. |
 | `AAB_CODEX_FIRST_PARTY_MODEL` | Codex first-party model. Defaults to `gpt-5.5`. |
 | `AAB_CODEX_THIRD_PARTY_OPENAI_BASE_URL` | OpenAI-compatible third-party base URL for Codex. Defaults to `https://inference-api.nvidia.com/v1`. |
@@ -162,7 +162,7 @@ All variables are optional unless you select a provider that needs its credentia
 | `~/.claude.json` | Merged with onboarding and optional API-key approval state; existing file is backed up. |
 | `~/.codex/config.toml` | Rewritten with unattended Codex defaults and selected provider config while preserving Codex plugin tables; existing file is backed up. |
 | `~/.codex/auth.json` | Written by `codex login --with-api-key` when first-party Codex API-key auth is configured. |
-| `~/.bashrc` | Managed block for PATH and non-secret unattended-mode exports only. |
+| `~/.bashrc` | Managed block for PATH, non-secret unattended-mode exports, and `claude` / `codex` aliases to the selected wrapper files. |
 | `/etc/environment` | Existing AAB managed blocks are removed so credentials do not remain there. |
 | `~/.brev/credentials.json` | Written by `brev login --api-key ... --org-id ...` when Brev credentials are configured. |
 | `~/.brev/onboarding_step.json` | Written to skip the Brev tutorial. |

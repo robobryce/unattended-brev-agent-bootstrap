@@ -9,15 +9,18 @@
 #   claude -> claude-first-party | claude-third-party-anthropic | claude-third-party-deepseek
 #   codex  -> codex-first-party  | codex-third-party-openai
 #
-# AAB_CLAUDE_CODE_INFERENCE_PROVIDER selects the claude symlink target:
+# AAB_CLAUDE_CODE_INFERENCE_PROVIDER selects the claude symlink target and
+# interactive shell alias:
 #   first-party, third-party-anthropic, or third-party-deepseek.
 #
-# AAB_CODEX_INFERENCE_PROVIDER selects the codex symlink target:
+# AAB_CODEX_INFERENCE_PROVIDER selects the codex symlink target and
+# interactive shell alias:
 #   first-party or third-party-openai.
 #
 # Provider credentials and model names are kept out of ~/.bashrc and
-# /etc/environment. The managed ~/.bashrc block only puts ~/.local/bin on PATH
-# and exports non-secret unattended-mode defaults.
+# /etc/environment. The managed ~/.bashrc block puts ~/.local/bin on PATH,
+# aliases claude/codex to the selected wrappers, and exports non-secret
+# unattended-mode defaults.
 #
 # Can be run from a local checkout or piped via `curl ... | bash`. Safe to
 # re-run: existing settings.json, config.toml, and .claude.json are backed up
@@ -1379,12 +1382,18 @@ update_bashrc() {
     fi
 
     local effort="${AAB_CLAUDE_CODE_EFFORT:-$DEFAULT_CLAUDE_CODE_EFFORT}"
+    local claude_provider codex_provider
+    claude_provider=$(normalize_claude_code_inference_provider "${AAB_CLAUDE_CODE_INFERENCE_PROVIDER:-$DEFAULT_CLAUDE_CODE_INFERENCE_PROVIDER}")
+    codex_provider=$(normalize_codex_inference_provider "${AAB_CODEX_INFERENCE_PROVIDER:-$DEFAULT_CODEX_INFERENCE_PROVIDER}")
 
     {
         printf '\n%s\n' "${BASHRC_MARKER_BEGIN}"
         printf '%s\n' \
             '# Sources env file created by the Claude Code native installer and' \
             '# ensures AAB-managed launcher wrappers are first on PATH.' \
+            '# The aliases below intentionally target provider wrapper files' \
+            '# directly so an upstream installer replacing ~/.local/bin/claude' \
+            '# or ~/.local/bin/codex cannot bypass AAB in interactive shells.' \
             '# DEBUG_SDK=1 turns on Claude Code debug logging, written to' \
             '# ~/.claude/debug/<uuid>.txt with latest symlinked to the current' \
             '# run and verbose tags enabled by the DEBUG_SDK gate.' \
@@ -1395,6 +1404,8 @@ update_bashrc() {
             'export CLAUDE_CODE_SANDBOXED=1' \
             'export DEBUG_SDK=1'
         printf 'export CLAUDE_CODE_EFFORT_LEVEL="%s"\n' "$effort"
+        printf 'alias claude="$HOME/.local/bin/claude-%s"\n' "$claude_provider"
+        printf 'alias codex="$HOME/.local/bin/codex-%s"\n' "$codex_provider"
         printf '%s\n' "${BASHRC_MARKER_END}"
     } >> "${BASHRC}"
     log "Wrote autonomous-agent-bootstrap block to ${BASHRC} (effort=${effort})."

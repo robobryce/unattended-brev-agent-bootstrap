@@ -155,8 +155,10 @@ pass "AAB env file written with private provider config."
 # 7. bashrc exposes only PATH and non-secret unattended-mode defaults.
 grep -q 'export PATH="$HOME/.local/bin:$PATH"' "$BASHRC" \
     || fail "PATH export missing from bashrc managed block."
-! grep -q '^alias claude=' "$BASHRC" || fail "claude alias should not be written."
-! grep -q '^alias codex=' "$BASHRC" || fail "codex alias should not be written."
+grep -q "alias claude=\"\$HOME/.local/bin/claude-${expected_claude_provider}\"" "$BASHRC" \
+    || fail "claude alias does not target selected wrapper."
+grep -q "alias codex=\"\$HOME/.local/bin/codex-${expected_codex_provider}\"" "$BASHRC" \
+    || fail "codex alias does not target selected wrapper."
 ! grep -q 'claude_code_switch_inference_provider' "$BASHRC" \
     || fail "provider switch function should not be written."
 ! grep -q '^export AAB_' "$BASHRC" || fail "AAB vars should not be exported from bashrc."
