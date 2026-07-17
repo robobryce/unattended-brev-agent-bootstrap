@@ -85,14 +85,7 @@ SSH_MARKER_BEGIN="# >>> autonomous-agent-bootstrap >>>"
 SSH_MARKER_END="# <<< autonomous-agent-bootstrap <<<"
 GIT_HOOKS_DIR="${AAB_DIR}/git-hooks"
 GIT_HOOK_DISPATCHER="${GIT_HOOKS_DIR}/aab-git-hook"
-# gitleaks powers the pre-commit secret scan the dispatcher runs. Pin the
-# version (and per-arch tarball SHA-256) to match the version CI's secret-scan
-# job and AGENTS.md install snippet use, so "blocked locally" == "blocked in
-# CI". Installed to ~/.local/bin (the dir the managed PATH front-loads).
-GITLEAKS_VERSION="8.18.4"
 GITLEAKS_BIN="${HOME}/.local/bin/gitleaks"
-GITLEAKS_SHA256_LINUX_X64="ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d"
-GITLEAKS_SHA256_LINUX_ARM64="bf5f7f466ebfade1296c8bd32cf7d3f592c2aa78836aa9980ffbe2cadca7a861"
 # git hook names the dispatcher is symlinked under. core.hooksPath replaces
 # the per-repo hooks dir wholesale, so we cover the hooks git invokes around a
 # commit / push and chain through to any repo-local hook of the same name.
@@ -115,11 +108,9 @@ GIT_HOOK_NAMES=(
 CLAUDE_MEMORY_FILE="${CLAUDE_DIR}/CLAUDE.md"
 CODEX_AGENTS_FILE="${CODEX_DIR}/AGENTS.md"
 AGENT_RULES_STATE_FILE="${AAB_DIR}/agent-rules.snapshot"
-# Path to the uv binary, resolved by ensure_uv and consumed by the uv tool
+# Path to the uv binary, resolved by install_uv and consumed by the uv tool
 # install steps.
 UV_BIN=""
-# Private autocuda package, installed best-effort as its own uv tool.
-AUTOCUDA_PRIVATE_REPO="brycelelbach-private/autocuda"
 DEFAULT_CLAUDE_CODE_MODEL="claude-opus-4-8"
 DEFAULT_CLAUDE_CODE_HAIKU_MODEL="claude-haiku-4-5"
 DEFAULT_CLAUDE_CODE_SONNET_MODEL="claude-sonnet-4-6"
@@ -150,6 +141,43 @@ need_sudo() {
     if [ "$(id -u)" -eq 0 ]; then echo ""; else echo "sudo"; fi
 }
 SUDO=$(need_sudo)
+
+# >>> src/bootstrap/00_versions.bash >>>
+# ---------------------------------------------------------------------------
+# Versions for every non-apt package AAB installs. Keep release versions,
+# immutable git refs, and release-asset checksums together here so package
+# upgrades are reviewable in one place. Ubuntu packages remain in
+# apt_packages.txt; agent plugins remain in agent_plugins.txt.
+# ---------------------------------------------------------------------------
+CLAUDE_CODE_VERSION="2.1.212"
+CODEX_VERSION="0.144.5"
+
+PI_VERSION="0.80.10"
+PI_SHA256_LINUX_X64="ab6604f6c3f3d050783e7abbbdd1f79b775b20f3969833ce9721740685d01e13"
+PI_SHA256_LINUX_ARM64="dfe4340063dfe27406fa64aac99d904726fac079197c4579b9e8155175d05272"
+
+BREV_VERSION="0.6.330"
+BREV_SHA256_LINUX_AMD64="5a6e70374db9be33f85f299161733b4a8409840d47638c781429b96e8d53704f"
+BREV_SHA256_LINUX_ARM64="d7e0426df7714a6a6f14d9dfa46bf82fd5f38a31f968a912ac6dfaf51728122c"
+
+LIFEBOAT_REPO="brycelelbach/lifeboat"
+LIFEBOAT_REF="380cfd61de7e1d22ce6d32d27f8d92d4b8685edb"
+
+GH_VERSION="2.96.0"
+GH_SHA256_LINUX_AMD64="83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60"
+GH_SHA256_LINUX_ARM64="06f86ec7103d41993b76cd78072f43595c34aaa56506d971d9860e67140bf909"
+
+UV_VERSION="0.11.29"
+RUFF_VERSION="0.15.12"
+PRE_COMMIT_VERSION="4.6.0"
+
+AUTOCUDA_PRIVATE_REPO="brycelelbach-private/autocuda"
+AUTOCUDA_REF="ee6bb70214ead98b52d54b87041a963714e3e8ec"
+
+GITLEAKS_VERSION="8.18.4"
+GITLEAKS_SHA256_LINUX_X64="ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d"
+GITLEAKS_SHA256_LINUX_ARM64="bf5f7f466ebfade1296c8bd32cf7d3f592c2aa78836aa9980ffbe2cadca7a861"
+# <<< src/bootstrap/00_versions.bash <<<
 
 # >>> src/bootstrap/01_install_base_deps.bash >>>
 # ---------------------------------------------------------------------------
@@ -225,10 +253,9 @@ install_base_deps() {
 # 1. Install / upgrade Claude Code via the native installer.
 # ---------------------------------------------------------------------------
 install_claude() {
-    log "Installing / updating Claude Code via native installer..."
-    curl -fsSL https://claude.ai/install.sh | bash
+    log "Installing Claude Code ${CLAUDE_CODE_VERSION} via native installer..."
+    curl -fsSL https://claude.ai/install.sh | bash -s -- "$CLAUDE_CODE_VERSION"
 }
-
 # <<< src/bootstrap/03_install_claude.bash <<<
 
 # >>> src/bootstrap/04_install_codex.bash >>>
@@ -236,8 +263,8 @@ install_claude() {
 # 2. Install / upgrade Codex via OpenAI's standalone installer.
 # ---------------------------------------------------------------------------
 install_codex() {
-    log "Installing / updating Codex CLI via standalone installer..."
-    local installer_url="https://github.com/openai/codex/releases/latest/download/install.sh"
+    log "Installing Codex CLI ${CODEX_VERSION} via standalone installer..."
+    local installer_url="https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/install.sh"
     local github_token="${GH_TOKEN:-${GITHUB_TOKEN:-${AAB_GH_TOKEN:-}}}"
     local real_curl
     real_curl="$(command -v curl)"
@@ -284,7 +311,7 @@ BASH
         fi
 
         "$real_curl" -fsSL "$installer_url" -o "$installer"
-        _run_without_controlling_tty "${installer_env[@]}" bash "$installer"
+        _run_without_controlling_tty "${installer_env[@]}" bash "$installer" --release "$CODEX_VERSION"
     )
 }
 
@@ -300,18 +327,57 @@ _run_without_controlling_tty() {
         setsid "$@" </dev/null
     fi
 }
-
 # <<< src/bootstrap/04_install_codex.bash <<<
 
 # >>> src/bootstrap/05_install_brev.bash >>>
 # ---------------------------------------------------------------------------
-# 3. Install / upgrade the Brev CLI via the official install-latest.sh.
+# 3. Install the pinned Brev CLI release.
 # ---------------------------------------------------------------------------
 install_brev() {
-    log "Installing / updating Brev CLI via official installer..."
-    curl -fsSL https://raw.githubusercontent.com/brevdev/brev-cli/main/bin/install-latest.sh | bash
-}
+    local arch sha256
+    case "$(uname -m)" in
+        x86_64|amd64)
+            arch="amd64"
+            sha256="$BREV_SHA256_LINUX_AMD64"
+            ;;
+        aarch64|arm64)
+            arch="arm64"
+            sha256="$BREV_SHA256_LINUX_ARM64"
+            ;;
+        *)
+            warn "Unsupported architecture for Brev ${BREV_VERSION}: $(uname -m)."
+            return
+            ;;
+    esac
 
+    local asset tmp_dir archive
+    asset="brev-cli_${BREV_VERSION}_linux_${arch}.tar.gz"
+    tmp_dir=$(mktemp -d)
+    archive="${tmp_dir}/${asset}"
+    log "Installing Brev CLI ${BREV_VERSION} from its official release..."
+    if ! curl -fsSL \
+        "https://github.com/brevdev/brev-cli/releases/download/v${BREV_VERSION}/${asset}" \
+        -o "$archive"; then
+        rm -rf "$tmp_dir"
+        warn "Could not download Brev CLI ${BREV_VERSION}."
+        exit 1
+    fi
+    if ! printf '%s  %s\n' "$sha256" "$archive" | sha256sum -c - >/dev/null; then
+        rm -rf "$tmp_dir"
+        warn "Brev CLI ${BREV_VERSION} checksum verification failed."
+        exit 1
+    fi
+    tar -xzf "$archive" -C "$tmp_dir"
+    if [ ! -x "${tmp_dir}/brev" ]; then
+        rm -rf "$tmp_dir"
+        warn "Brev CLI ${BREV_VERSION} archive did not contain an executable brev binary."
+        exit 1
+    fi
+    mkdir -p "${HOME}/.local/bin"
+    install -m 0755 "${tmp_dir}/brev" "${HOME}/.local/bin/brev"
+    rm -rf "$tmp_dir"
+    log "Installed Brev CLI ${BREV_VERSION} to ${HOME}/.local/bin/brev."
+}
 # <<< src/bootstrap/05_install_brev.bash <<<
 
 # >>> src/bootstrap/05_install_pi.bash >>>
@@ -319,14 +385,16 @@ install_brev() {
 # Install / upgrade Pi from its official standalone Linux release.
 # ---------------------------------------------------------------------------
 install_pi() {
-    local machine asset
+    local machine asset sha256
     machine=$(uname -m)
     case "$machine" in
         x86_64|amd64)
             asset="pi-linux-x64.tar.gz"
+            sha256="$PI_SHA256_LINUX_X64"
             ;;
         aarch64|arm64)
             asset="pi-linux-arm64.tar.gz"
+            sha256="$PI_SHA256_LINUX_ARM64"
             ;;
         *)
             warn "Pi has no supported standalone Linux release for ${machine}; skipping installation."
@@ -334,25 +402,22 @@ install_pi() {
             ;;
     esac
 
-    log "Installing / updating Pi via official standalone release..."
-    local release_base="https://github.com/earendil-works/pi/releases/latest/download"
-    local tmpdir archive checksum expected actual
+    log "Installing Pi ${PI_VERSION} via official standalone release..."
+    local release_base="https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}"
+    local tmpdir archive actual
     tmpdir=$(mktemp -d)
     archive="${tmpdir}/${asset}"
-    checksum="${tmpdir}/SHA256SUMS"
 
-    if ! curl -fsSL "${release_base}/${asset}" -o "$archive" ||
-       ! curl -fsSL "${release_base}/SHA256SUMS" -o "$checksum"; then
+    if ! curl -fsSL "${release_base}/${asset}" -o "$archive"; then
         rm -rf "$tmpdir"
-        warn "Could not download the latest Pi standalone release."
+        warn "Could not download Pi ${PI_VERSION} standalone release."
         exit 1
     fi
 
-    expected=$(awk -v asset="$asset" '$2 == asset { print $1; exit }' "$checksum")
     actual=$(sha256sum "$archive" | awk '{ print $1 }')
-    if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+    if [ "$actual" != "$sha256" ]; then
         rm -rf "$tmpdir"
-        warn "Pi release checksum verification failed for ${asset}."
+        warn "Pi ${PI_VERSION} checksum verification failed for ${asset}."
         exit 1
     fi
 
@@ -368,50 +433,9 @@ install_pi() {
     mv "${tmpdir}/pi" "$PI_INSTALL_DIR"
     rm -rf "$tmpdir"
     ln -sfn "${PI_INSTALL_DIR}/pi" "${HOME}/.local/bin/pi-aab-real"
-    log "Installed Pi at ${PI_INSTALL_DIR}."
+    log "Installed Pi ${PI_VERSION} at ${PI_INSTALL_DIR}."
 }
 # <<< src/bootstrap/05_install_pi.bash <<<
-
-# >>> src/bootstrap/06_configure_brev_auth.bash >>>
-# ---------------------------------------------------------------------------
-# 3b. Configure Brev API-key auth.
-#
-# `brev login --api-key ... --org-id ...` writes Brev's credentials cache,
-# which makes future Brev commands non-interactive. The API key and org ID
-# are a pair: if the caller provides one without the other, fail immediately
-# instead of leaving Brev on an interactive auth path.
-# ---------------------------------------------------------------------------
-configure_brev_auth() {
-    local api_key="${AAB_BREV_API_KEY:-}"
-    local org_id="${AAB_BREV_ORG_ID:-}"
-
-    if [ -z "$api_key" ] && [ -z "$org_id" ]; then
-        return
-    fi
-    if [ -z "$api_key" ] || [ -z "$org_id" ]; then
-        warn "AAB_BREV_API_KEY and AAB_BREV_ORG_ID must both be set to configure Brev API-key auth."
-        exit 1
-    fi
-
-    local brev_bin=""
-    if command -v brev >/dev/null 2>&1; then
-        brev_bin=$(command -v brev)
-    elif [ -x "${HOME}/.local/bin/brev" ]; then
-        brev_bin="${HOME}/.local/bin/brev"
-    else
-        warn "brev binary not on PATH; cannot configure AAB_BREV_API_KEY auth."
-        exit 1
-    fi
-
-    if ! "$brev_bin" login --api-key "$api_key" --org-id "$org_id" >/dev/null 2>&1; then
-        warn "brev login --api-key failed; cannot configure Brev API-key auth."
-        exit 1
-    fi
-
-    log "Configured Brev API-key auth from AAB_BREV_API_KEY and AAB_BREV_ORG_ID."
-}
-
-# <<< src/bootstrap/06_configure_brev_auth.bash <<<
 
 # >>> src/bootstrap/07_install_lifeboat.bash >>>
 # ---------------------------------------------------------------------------
@@ -430,7 +454,7 @@ configure_brev_auth() {
 # ---------------------------------------------------------------------------
 install_lifeboat() {
     log "Installing / updating lifeboat backup tool..."
-    local url="https://raw.githubusercontent.com/brycelelbach/lifeboat/main/lifeboat"
+    local url="https://raw.githubusercontent.com/${LIFEBOAT_REPO}/${LIFEBOAT_REF}/lifeboat"
     local dest="${HOME}/.local/bin/lifeboat"
     mkdir -p "${HOME}/.local/bin"
     if curl -fsSL "$url" -o "${dest}.tmp"; then
@@ -442,7 +466,6 @@ install_lifeboat() {
         warn "Could not fetch lifeboat from ${url}; continuing without it."
     fi
 }
-
 # <<< src/bootstrap/07_install_lifeboat.bash <<<
 
 # >>> src/bootstrap/08_install_gh.bash >>>
@@ -450,10 +473,6 @@ install_lifeboat() {
 # 4. Install a pinned gh CLI standalone release. gh intentionally does not use
 # apt so every apt invocation remains centralized in install_base_deps().
 # ---------------------------------------------------------------------------
-GH_VERSION="2.96.0"
-GH_SHA256_LINUX_AMD64="83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60"
-GH_SHA256_LINUX_ARM64="06f86ec7103d41993b76cd78072f43595c34aaa56506d971d9860e67140bf909"
-
 install_gh() {
     if command -v gh >/dev/null 2>&1 \
         && gh --version 2>/dev/null | head -n 1 | grep -q "gh version ${GH_VERSION} "; then
@@ -501,7 +520,7 @@ install_gh() {
 }
 # <<< src/bootstrap/08_install_gh.bash <<<
 
-# >>> src/bootstrap/09_ensure_uv.bash >>>
+# >>> src/bootstrap/09_install_uv.bash >>>
 # ---------------------------------------------------------------------------
 # 4b. Ensure uv (the Python package / interpreter installer) is available,
 # installing it via its official installer when absent. uv installs the CLI
@@ -516,12 +535,13 @@ install_gh() {
 # live PATH here, regardless of whether uv was already installed, so the
 # install steps that follow in this process can find the tools they install.
 # ---------------------------------------------------------------------------
-ensure_uv() {
-    if command -v uv >/dev/null 2>&1; then
+install_uv() {
+    if command -v uv >/dev/null 2>&1 \
+        && uv --version 2>/dev/null | grep -q "^uv ${UV_VERSION} "; then
         UV_BIN=$(command -v uv)
     else
-        log "Installing uv (the Python installer) via the official installer."
-        curl -fsSL https://astral.sh/uv/install.sh | sh
+        log "Installing uv ${UV_VERSION} via the official installer."
+        curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
         if command -v uv >/dev/null 2>&1; then
             UV_BIN=$(command -v uv)
         elif [ -x "${HOME}/.local/bin/uv" ]; then
@@ -554,14 +574,13 @@ _github_git_env() {
         printf '%s\0' env
     fi
 }
-
-# <<< src/bootstrap/09_ensure_uv.bash <<<
+# <<< src/bootstrap/09_install_uv.bash <<<
 
 # >>> src/bootstrap/10_install_uv_tools.bash >>>
 # ---------------------------------------------------------------------------
 # 4d. Install the CLI tools listed in uv_tools.txt with `uv tool install`. Each
 # tool gets its own isolated environment and its executables are symlinked into
-# ~/.local/bin, which the managed PATH and the live-PATH prepend in ensure_uv
+# ~/.local/bin, which the managed PATH and the live-PATH prepend in install_uv
 # both put ahead of the system dirs. This is the public, always-installable set
 # (ruff, pre-commit); the private autocuda package is installed separately
 # below. Idempotent: `uv tool install` is a no-op when the tool is already
@@ -573,7 +592,7 @@ _github_git_env() {
 UV_TOOLS_DEFAULT_FILE="${PWD}/uv_tools.txt"
 UV_TOOLS_DEFAULT_URL="https://raw.githubusercontent.com/${AAB_BOOTSTRAP_REPO}/${AAB_BOOTSTRAP_REF}/uv_tools.txt"
 install_uv_tools() {
-    ensure_uv
+    install_uv
     [ -n "${UV_BIN:-}" ] || { warn "uv unavailable; skipping uv tool install."; return; }
 
     local tools_file="${AAB_UV_TOOLS_FILE:-}"
@@ -600,6 +619,17 @@ install_uv_tools() {
         line="${line#"${line%%[![:space:]]*}"}"
         line="${line%"${line##*[![:space:]]}"}"
         [ -z "$line" ] && continue
+        case "$line" in
+            ruff) line="ruff==${RUFF_VERSION}" ;;
+            pre-commit) line="pre-commit==${PRE_COMMIT_VERSION}" ;;
+        esac
+        case "$line" in
+            *==?*) ;;
+            *)
+                warn "uv tool entry '${line}' is not version-pinned (expected package==version)."
+                return 1
+                ;;
+        esac
         tools+=("$line")
     done <<< "$content"
 
@@ -617,7 +647,7 @@ install_uv_tools() {
 }
 # <<< src/bootstrap/10_install_uv_tools.bash <<<
 
-# >>> src/bootstrap/11_install_private_autocuda.bash >>>
+# >>> src/bootstrap/11_install_autocuda.bash >>>
 # ---------------------------------------------------------------------------
 # 4e. Install the private autocuda package as its own uv tool, best effort.
 # autocuda lives behind brycelelbach-private, so it is not in uv_tools.txt — an
@@ -630,8 +660,8 @@ install_uv_tools() {
 # headers and a C compiler (in apt_packages.txt), so a host lacking that
 # toolchain degrades here rather than failing the bootstrap.
 # ---------------------------------------------------------------------------
-install_private_autocuda() {
-    ensure_uv
+_install_autocuda_package() {
+    install_uv
     [ -n "${UV_BIN:-}" ] || { warn "uv unavailable; skipping autocuda install."; return; }
 
     local -a git_env=()
@@ -639,30 +669,11 @@ install_private_autocuda() {
 
     log "Installing the private autocuda package as a uv tool (best effort)."
     "${git_env[@]}" "$UV_BIN" tool install \
-        "git+https://github.com/${AUTOCUDA_PRIVATE_REPO}" 2>&1 | sed 's/^/  /' \
+        "git+https://github.com/${AUTOCUDA_PRIVATE_REPO}@${AUTOCUDA_REF}" 2>&1 | sed 's/^/  /' \
         || warn "Could not install autocuda (private repo without access, or its build toolchain is absent); continuing without it."
 }
 
-# <<< src/bootstrap/11_install_private_autocuda.bash <<<
-
-# >>> src/bootstrap/12_run_autocuda_install.bash >>>
-# ---------------------------------------------------------------------------
-# 4f. Register the autocuda plugin with the harnesses via the package's own
-# `autocuda install` console command, which registers the autocuda plugin
-# marketplace with Claude Code and Codex and copies the Codex worker subagent
-# definition. Runs after the harnesses are installed. A no-op warning when
-# autocuda is not on PATH (its private install was skipped); autocuda install
-# itself exits 0 and warns when a harness is missing, so this is safe to call
-# unconditionally once the harnesses are in place.
-#
-# autocuda install shells out to `claude plugin marketplace add` / `claude
-# plugin install`, which re-serialise ~/.claude/settings.json against Claude
-# Code's internal schema and drop top-level keys it doesn't enumerate (notably
-# `effortLevel`). Snapshot settings.json first and re-merge the AAB-managed
-# top-level keys after, mirroring install_claude_code_plugins, so the on-disk
-# shape stays a superset of what write_claude_settings produced.
-# ---------------------------------------------------------------------------
-run_autocuda_install() {
+_configure_autocuda() {
     if ! command -v autocuda >/dev/null 2>&1; then
         warn "autocuda not on PATH (its private install was skipped); skipping autocuda install."
         return
@@ -697,196 +708,16 @@ PY
         rm -f "$snapshot"
     fi
 }
-# <<< src/bootstrap/12_run_autocuda_install.bash <<<
 
-# >>> src/bootstrap/13_configure_claude.bash >>>
+install_autocuda() {
+    _install_autocuda_package
+    _configure_autocuda
+}
+# <<< src/bootstrap/11_install_autocuda.bash <<<
+
+# >>> src/bootstrap/12_model_profiles.bash >>>
 # ---------------------------------------------------------------------------
-# 5. Write ~/.claude/settings.json.
-# ---------------------------------------------------------------------------
-write_claude_managed_settings() {
-    local managed_dir
-    managed_dir=$(dirname "$CLAUDE_MANAGED_SETTINGS_FILE")
-
-    if [ -n "$SUDO" ] && ! sudo -n true 2>/dev/null; then
-        warn "Writing $CLAUDE_MANAGED_SETTINGS_FILE needs sudo and passwordless sudo is not available; Claude interactive-tool deny policy is only in user settings."
-        return
-    fi
-
-    local tmp
-    tmp=$(mktemp)
-    cat > "$tmp" <<'JSON'
-{
-  "permissions": {
-    "deny": [
-      "AskUserQuestion",
-      "EnterPlanMode",
-      "ExitPlanMode"
-    ]
-  }
-}
-JSON
-
-    if ! $SUDO install -d -m 0755 "$managed_dir"; then
-        warn "Could not create $managed_dir; Claude interactive-tool deny policy is only in user settings."
-        rm -f "$tmp"
-        return
-    fi
-    if ! $SUDO install -m 0644 "$tmp" "$CLAUDE_MANAGED_SETTINGS_FILE"; then
-        warn "Could not write $CLAUDE_MANAGED_SETTINGS_FILE; Claude interactive-tool deny policy is only in user settings."
-        rm -f "$tmp"
-        return
-    fi
-
-    rm -f "$tmp"
-    log "Wrote ${CLAUDE_MANAGED_SETTINGS_FILE}."
-}
-
-write_claude_settings() {
-    mkdir -p "${CLAUDE_DIR}"
-    if [[ -f "${SETTINGS_FILE}" ]]; then
-        local backup
-        backup="${SETTINGS_FILE}.bak.$(date +%Y%m%d-%H%M%S)"
-        cp "${SETTINGS_FILE}" "${backup}"
-        log "Backed up existing settings.json -> ${backup}."
-    fi
-    local -A profile=()
-    resolve_model_profile claude profile
-    if [ "${profile[source]}" = "third-party" ]; then
-        require_inference_gateway "Claude profile '${profile[name]}'"
-    fi
-    local model="${profile[model]}"
-    local effort="${profile[effort]}"
-    local model_json effort_json
-    model_json=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$model")
-    effort_json=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$effort")
-    # Belt-and-suspenders: bypassPermissions skips prompts for writes
-    # under .claude/ already, but the explicit allow list also keeps
-    # config / memory / agent / skill edits unprompted in 'default' or
-    # 'acceptEdits' mode if a user toggles out of bypass mid-session.
-    #
-    # CLAUDE_CODE_ATTRIBUTION_HEADER=0 omits the attribution block (client
-    # version and prompt fingerprint) from the start of the system prompt.
-    # That block changes per request, so it invalidates the prompt-cache
-    # prefix on every turn — disabling it restores cache hits when Claude is
-    # routed through a third-party gateway, which is the common AAB setup.
-    #
-    # Network-resilience env for unattended runs on Bedrock / gateway
-    # connections, where Claude Code's 5-minute streaming idle timeout is
-    # active. API_FORCE_IDLE_TIMEOUT=0 disables that abort, which a long
-    # Opus turn trips when it streams no bytes for 5 minutes (surfacing as
-    # "The socket connection was closed unexpectedly"). API_TIMEOUT_MS
-    # widens the per-request ceiling to 30 minutes, and
-    # CLAUDE_CODE_MAX_RETRIES raises the backoff-retry count above its
-    # default of 10. CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 removes the
-    # print-mode (-p) ceiling on how long Claude Code waits for still-running
-    # background tasks before exiting: by default a headless turn that has
-    # spawned background work (e.g. long-lived sub-agents/workers) prints
-    # "Background tasks still running after 600s; terminating" and exits after
-    # ten minutes, killing that work. Unattended orchestrators that fan out to
-    # background agents and then block for their completion must wait
-    # indefinitely instead.
-    #
-    # CLAUDE_CODE_ENABLE_TELEMETRY=1 plus OTEL_LOGS_EXPORTER=console turns on
-    # OpenTelemetry usage/event logging to the console for these unattended
-    # runs. We deliberately leave OTEL_LOG_RAW_API_BODIES, OTEL_LOG_USER_PROMPTS,
-    # OTEL_LOG_TOOL_DETAILS, and OTEL_LOG_TOOL_CONTENT unset — all default to
-    # disabled — so prompts, tool arguments, and raw request/response bodies
-    # stay out of the telemetry stream.
-    cat > "${SETTINGS_FILE}" <<JSON
-{
-  "model": ${model_json},
-  "effortLevel": ${effort_json},
-  "permissions": {
-    "defaultMode": "bypassPermissions",
-    "allow": [
-      "Edit(${HOME}/.claude/**)",
-      "Write(${HOME}/.claude/**)",
-      "Read(${HOME}/.claude/**)",
-      "Edit(${HOME}/.claude.json)",
-      "Write(${HOME}/.claude.json)",
-      "Read(${HOME}/.claude.json)"
-    ],
-    "deny": [
-      "AskUserQuestion",
-      "EnterPlanMode",
-      "ExitPlanMode"
-    ]
-  },
-  "skipDangerousModePermissionPrompt": true,
-  "env": {
-    "CLAUDE_CODE_SANDBOXED": "1",
-    "CLAUDE_CODE_EFFORT_LEVEL": ${effort_json},
-    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-    "API_FORCE_IDLE_TIMEOUT": "0",
-    "API_TIMEOUT_MS": "1800000",
-    "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "0",
-    "CLAUDE_CODE_MAX_RETRIES": "15",
-    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
-    "OTEL_LOGS_EXPORTER": "console"
-  }
-}
-JSON
-    log "Wrote ${SETTINGS_FILE} (profile=${profile[source]}/${profile[name]}, model=${model}, effort=${effort})."
-    write_claude_managed_settings
-}
-# Skip Claude Code's first-run theme prompt and pre-approve the
-# first-party API-key fingerprint when one is set. Both gates live in
-# ~/.claude.json, so preserve unrelated authentication and user fields.
-skip_claude_onboarding() {
-    command -v python3 >/dev/null 2>&1 || { log "ERROR: python3 required to edit ~/.claude.json."; exit 1; }
-    python3 - "${CLAUDE_JSON}" "${ANTHROPIC_API_KEY:-}" <<'PY'
-import json, os, shutil, sys, time
-path = sys.argv[1]
-api_key = sys.argv[2] if len(sys.argv) > 2 else ""
-data = {}
-if os.path.exists(path):
-    backup = f"{path}.bak.{time.strftime('%Y%m%d-%H%M%S')}"
-    shutil.copy2(path, backup)
-    print(f"[bootstrap] Backed up existing .claude.json -> {backup}.")
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        data = {}
-data["hasCompletedOnboarding"] = True
-if api_key:
-    fp = api_key[-20:]
-    resp = data.setdefault("customApiKeyResponses", {})
-    approved = resp.setdefault("approved", [])
-    if fp not in approved:
-        approved.append(fp)
-    resp.setdefault("rejected", [])
-    print(f"[bootstrap] Pre-approved ANTHROPIC_API_KEY fingerprint ...{fp}.")
-fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-with os.fdopen(fd, "w") as f:
-    json.dump(data, f, indent=2)
-print(f"[bootstrap] Set hasCompletedOnboarding=true in {path}.")
-PY
-}
-
-# Write Claude-specific shell defaults to a dedicated file. The generic
-# ~/.bashrc integration sources every file in ~/.aab/shell instead of
-# hard-coding harness settings in the shell integration module.
-write_claude_shell_config() {
-    mkdir -p "${AAB_SHELL_CONFIG_DIR}"
-    printf '%s\n' \
-        '# Generated by autonomous-agent-bootstrap.' \
-        'export CLAUDE_CODE_SANDBOXED=1' \
-        'export DEBUG_SDK=1' > "${CLAUDE_SHELL_CONFIG_FILE}"
-    chmod 0644 "${CLAUDE_SHELL_CONFIG_FILE}"
-    log "Wrote Claude shell configuration to ${CLAUDE_SHELL_CONFIG_FILE}."
-}
-
-configure_claude() {
-    write_claude_settings
-    write_claude_shell_config
-    skip_claude_onboarding
-}
-# <<< src/bootstrap/13_configure_claude.bash <<<
-
-# >>> src/bootstrap/14_model_profiles.bash >>>
-# ---------------------------------------------------------------------------
-# Parse and resolve environment-defined model profiles.
+# Parse, validate, and resolve environment-defined model profiles.
 # ---------------------------------------------------------------------------
 _model_profile_lines() {
     local profiles="$1" line
@@ -1152,11 +983,11 @@ require_inference_gateway() {
         return 1
     fi
 }
-# <<< src/bootstrap/14_model_profiles.bash <<<
+# <<< src/bootstrap/12_model_profiles.bash <<<
 
-# >>> src/bootstrap/14_write_aab_env_file.bash >>>
+# >>> src/bootstrap/12_write_aab_env_file.bash >>>
 # ---------------------------------------------------------------------------
-# Write ~/.aab/.env.
+# Persist shared model-profile and credential configuration in ~/.aab/.env.
 # ---------------------------------------------------------------------------
 write_aab_env_file() {
     mkdir -p "${AAB_DIR}"
@@ -1208,11 +1039,255 @@ write_aab_env_file() {
     mv -f "$tmp" "$AAB_ENV_FILE"
     log "Wrote ${AAB_ENV_FILE} (claude_profile=${claude_profile[source]}/${claude_profile[name]}, codex_profile=${codex_profile[source]}/${codex_profile[name]}, pi_profile=${pi_profile_name:-none})."
 }
-# <<< src/bootstrap/14_write_aab_env_file.bash <<<
+# <<< src/bootstrap/12_write_aab_env_file.bash <<<
 
-# >>> src/bootstrap/15_configure_codex.bash >>>
+# >>> src/bootstrap/13_configure_brev.bash >>>
 # ---------------------------------------------------------------------------
-# 7. Write the global Codex model instructions. model_instructions_file
+# Configure Brev API-key auth and skip interactive onboarding.
+#
+# `brev login --api-key ... --org-id ...` writes Brev's credentials cache,
+# which makes future Brev commands non-interactive. The API key and org ID
+# are a pair: if the caller provides one without the other, fail immediately
+# instead of leaving Brev on an interactive auth path.
+# ---------------------------------------------------------------------------
+_configure_brev_auth() {
+    local api_key="${AAB_BREV_API_KEY:-}"
+    local org_id="${AAB_BREV_ORG_ID:-}"
+
+    if [ -z "$api_key" ] && [ -z "$org_id" ]; then
+        return
+    fi
+    if [ -z "$api_key" ] || [ -z "$org_id" ]; then
+        warn "AAB_BREV_API_KEY and AAB_BREV_ORG_ID must both be set to configure Brev API-key auth."
+        exit 1
+    fi
+
+    local brev_bin=""
+    if command -v brev >/dev/null 2>&1; then
+        brev_bin=$(command -v brev)
+    elif [ -x "${HOME}/.local/bin/brev" ]; then
+        brev_bin="${HOME}/.local/bin/brev"
+    else
+        warn "brev binary not on PATH; cannot configure AAB_BREV_API_KEY auth."
+        exit 1
+    fi
+
+    if ! "$brev_bin" login --api-key "$api_key" --org-id "$org_id" >/dev/null 2>&1; then
+        warn "brev login --api-key failed; cannot configure Brev API-key auth."
+        exit 1
+    fi
+
+    log "Configured Brev API-key auth from AAB_BREV_API_KEY and AAB_BREV_ORG_ID."
+}
+
+_write_brev_onboarding() {
+    mkdir -p "${BREV_DIR}"
+    if [[ -f "${BREV_ONBOARDING}" ]]; then
+        local backup
+        backup="${BREV_ONBOARDING}.bak.$(date +%Y%m%d-%H%M%S)"
+        cp "${BREV_ONBOARDING}" "${backup}"
+        log "Backed up existing onboarding.json -> ${backup}."
+    fi
+    cat > "${BREV_ONBOARDING}" <<'JSON'
+{"step": 1, "hasRunBrevShell": true, "hasRunBrevOpen": true}
+JSON
+    log "Wrote ${BREV_ONBOARDING}."
+}
+
+configure_brev() {
+    _configure_brev_auth
+    _write_brev_onboarding
+}
+# <<< src/bootstrap/13_configure_brev.bash <<<
+
+# >>> src/bootstrap/13_configure_claude.bash >>>
+# ---------------------------------------------------------------------------
+# 5. Write ~/.claude/settings.json.
+# ---------------------------------------------------------------------------
+write_claude_managed_settings() {
+    local managed_dir
+    managed_dir=$(dirname "$CLAUDE_MANAGED_SETTINGS_FILE")
+
+    if [ -n "$SUDO" ] && ! sudo -n true 2>/dev/null; then
+        warn "Writing $CLAUDE_MANAGED_SETTINGS_FILE needs sudo and passwordless sudo is not available; Claude interactive-tool deny policy is only in user settings."
+        return
+    fi
+
+    local tmp
+    tmp=$(mktemp)
+    cat > "$tmp" <<'JSON'
+{
+  "permissions": {
+    "deny": [
+      "AskUserQuestion",
+      "EnterPlanMode",
+      "ExitPlanMode"
+    ]
+  }
+}
+JSON
+
+    if ! $SUDO install -d -m 0755 "$managed_dir"; then
+        warn "Could not create $managed_dir; Claude interactive-tool deny policy is only in user settings."
+        rm -f "$tmp"
+        return
+    fi
+    if ! $SUDO install -m 0644 "$tmp" "$CLAUDE_MANAGED_SETTINGS_FILE"; then
+        warn "Could not write $CLAUDE_MANAGED_SETTINGS_FILE; Claude interactive-tool deny policy is only in user settings."
+        rm -f "$tmp"
+        return
+    fi
+
+    rm -f "$tmp"
+    log "Wrote ${CLAUDE_MANAGED_SETTINGS_FILE}."
+}
+
+write_claude_settings() {
+    mkdir -p "${CLAUDE_DIR}"
+    if [[ -f "${SETTINGS_FILE}" ]]; then
+        local backup
+        backup="${SETTINGS_FILE}.bak.$(date +%Y%m%d-%H%M%S)"
+        cp "${SETTINGS_FILE}" "${backup}"
+        log "Backed up existing settings.json -> ${backup}."
+    fi
+    local -A profile=()
+    resolve_model_profile claude profile
+    if [ "${profile[source]}" = "third-party" ]; then
+        require_inference_gateway "Claude profile '${profile[name]}'"
+    fi
+    local model="${profile[model]}"
+    local effort="${profile[effort]}"
+    local model_json effort_json
+    model_json=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$model")
+    effort_json=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$effort")
+    # Belt-and-suspenders: bypassPermissions skips prompts for writes
+    # under .claude/ already, but the explicit allow list also keeps
+    # config / memory / agent / skill edits unprompted in 'default' or
+    # 'acceptEdits' mode if a user toggles out of bypass mid-session.
+    #
+    # CLAUDE_CODE_ATTRIBUTION_HEADER=0 omits the attribution block (client
+    # version and prompt fingerprint) from the start of the system prompt.
+    # That block changes per request, so it invalidates the prompt-cache
+    # prefix on every turn — disabling it restores cache hits when Claude is
+    # routed through a third-party gateway, which is the common AAB setup.
+    #
+    # Network-resilience env for unattended runs on Bedrock / gateway
+    # connections, where Claude Code's 5-minute streaming idle timeout is
+    # active. API_FORCE_IDLE_TIMEOUT=0 disables that abort, which a long
+    # Opus turn trips when it streams no bytes for 5 minutes (surfacing as
+    # "The socket connection was closed unexpectedly"). API_TIMEOUT_MS
+    # widens the per-request ceiling to 30 minutes, and
+    # CLAUDE_CODE_MAX_RETRIES raises the backoff-retry count above its
+    # default of 10. CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 removes the
+    # print-mode (-p) ceiling on how long Claude Code waits for still-running
+    # background tasks before exiting: by default a headless turn that has
+    # spawned background work (e.g. long-lived sub-agents/workers) prints
+    # "Background tasks still running after 600s; terminating" and exits after
+    # ten minutes, killing that work. Unattended orchestrators that fan out to
+    # background agents and then block for their completion must wait
+    # indefinitely instead.
+    #
+    # CLAUDE_CODE_ENABLE_TELEMETRY=1 plus OTEL_LOGS_EXPORTER=console turns on
+    # OpenTelemetry usage/event logging to the console for these unattended
+    # runs. We deliberately leave OTEL_LOG_RAW_API_BODIES, OTEL_LOG_USER_PROMPTS,
+    # OTEL_LOG_TOOL_DETAILS, and OTEL_LOG_TOOL_CONTENT unset — all default to
+    # disabled — so prompts, tool arguments, and raw request/response bodies
+    # stay out of the telemetry stream.
+    cat > "${SETTINGS_FILE}" <<JSON
+{
+  "model": ${model_json},
+  "effortLevel": ${effort_json},
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Edit(${HOME}/.claude/**)",
+      "Write(${HOME}/.claude/**)",
+      "Read(${HOME}/.claude/**)",
+      "Edit(${HOME}/.claude.json)",
+      "Write(${HOME}/.claude.json)",
+      "Read(${HOME}/.claude.json)"
+    ],
+    "deny": [
+      "AskUserQuestion",
+      "EnterPlanMode",
+      "ExitPlanMode"
+    ]
+  },
+  "skipDangerousModePermissionPrompt": true,
+  "env": {
+    "CLAUDE_CODE_SANDBOXED": "1",
+    "CLAUDE_CODE_EFFORT_LEVEL": ${effort_json},
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+    "API_FORCE_IDLE_TIMEOUT": "0",
+    "API_TIMEOUT_MS": "1800000",
+    "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "0",
+    "CLAUDE_CODE_MAX_RETRIES": "15",
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_LOGS_EXPORTER": "console"
+  }
+}
+JSON
+    log "Wrote ${SETTINGS_FILE} (profile=${profile[source]}/${profile[name]}, model=${model}, effort=${effort})."
+    write_claude_managed_settings
+}
+# Skip Claude Code's first-run theme prompt and pre-approve the
+# first-party API-key fingerprint when one is set. Both gates live in
+# ~/.claude.json, so preserve unrelated authentication and user fields.
+skip_claude_onboarding() {
+    command -v python3 >/dev/null 2>&1 || { log "ERROR: python3 required to edit ~/.claude.json."; exit 1; }
+    python3 - "${CLAUDE_JSON}" "${ANTHROPIC_API_KEY:-}" <<'PY'
+import json, os, shutil, sys, time
+path = sys.argv[1]
+api_key = sys.argv[2] if len(sys.argv) > 2 else ""
+data = {}
+if os.path.exists(path):
+    backup = f"{path}.bak.{time.strftime('%Y%m%d-%H%M%S')}"
+    shutil.copy2(path, backup)
+    print(f"[bootstrap] Backed up existing .claude.json -> {backup}.")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        data = {}
+data["hasCompletedOnboarding"] = True
+if api_key:
+    fp = api_key[-20:]
+    resp = data.setdefault("customApiKeyResponses", {})
+    approved = resp.setdefault("approved", [])
+    if fp not in approved:
+        approved.append(fp)
+    resp.setdefault("rejected", [])
+    print(f"[bootstrap] Pre-approved ANTHROPIC_API_KEY fingerprint ...{fp}.")
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
+    json.dump(data, f, indent=2)
+print(f"[bootstrap] Set hasCompletedOnboarding=true in {path}.")
+PY
+}
+
+# Write Claude-specific shell defaults to a dedicated file. The generic
+# ~/.bashrc integration sources every file in ~/.aab/shell instead of
+# hard-coding harness settings in the shell integration module.
+write_claude_shell_config() {
+    mkdir -p "${AAB_SHELL_CONFIG_DIR}"
+    printf '%s\n' \
+        '# Generated by autonomous-agent-bootstrap.' \
+        'export CLAUDE_CODE_SANDBOXED=1' \
+        'export DEBUG_SDK=1' > "${CLAUDE_SHELL_CONFIG_FILE}"
+    chmod 0644 "${CLAUDE_SHELL_CONFIG_FILE}"
+    log "Wrote Claude shell configuration to ${CLAUDE_SHELL_CONFIG_FILE}."
+}
+
+configure_claude() {
+    write_claude_settings
+    write_claude_shell_config
+    skip_claude_onboarding
+}
+# <<< src/bootstrap/13_configure_claude.bash <<<
+
+# >>> src/bootstrap/13_configure_codex.bash >>>
+# ---------------------------------------------------------------------------
+# Configure global Codex model instructions. model_instructions_file
 # replaces Codex's built-in model instructions, so this is a complete prompt,
 # not an AGENTS.md-style additive rule file. It is embedded here so the
 # bootstrap remains usable as a single script piped from curl.
@@ -1569,12 +1644,11 @@ configure_codex() {
     write_codex_config
     configure_codex_auth
 }
+# <<< src/bootstrap/13_configure_codex.bash <<<
 
-# <<< src/bootstrap/15_configure_codex.bash <<<
-
-# >>> src/bootstrap/16_pi_config.bash >>>
+# >>> src/bootstrap/13_configure_pi.bash >>>
 # ---------------------------------------------------------------------------
-# Write Pi's generated inference-gateway model catalog.
+# Configure Pi's generated inference-gateway model catalog.
 # ---------------------------------------------------------------------------
 write_pi_models_config() {
     local profiles line
@@ -1658,27 +1732,7 @@ PY
     chmod 600 "$PI_MODELS_MARKER"
     log "Wrote ${PI_MODELS_FILE} from AAB_PI_PROFILES."
 }
-# <<< src/bootstrap/16_pi_config.bash <<<
-
-# >>> src/bootstrap/19_skip_brev_onboarding.bash >>>
-# ---------------------------------------------------------------------------
-# 8. Write ~/.brev/onboarding_step.json to disable the Brev interactive tutorial.
-# ---------------------------------------------------------------------------
-skip_brev_onboarding() {
-    mkdir -p "${BREV_DIR}"
-    if [[ -f "${BREV_ONBOARDING}" ]]; then
-        local backup
-        backup="${BREV_ONBOARDING}.bak.$(date +%Y%m%d-%H%M%S)"
-        cp "${BREV_ONBOARDING}" "${backup}"
-        log "Backed up existing onboarding.json -> ${backup}."
-    fi
-    cat > "${BREV_ONBOARDING}" <<'JSON'
-{"step": 1, "hasRunBrevShell": true, "hasRunBrevOpen": true}
-JSON
-    log "Wrote ${BREV_ONBOARDING}."
-}
-
-# <<< src/bootstrap/19_skip_brev_onboarding.bash <<<
+# <<< src/bootstrap/13_configure_pi.bash <<<
 
 # >>> src/bootstrap/20_configure_git.bash >>>
 # ---------------------------------------------------------------------------
@@ -1707,7 +1761,7 @@ configure_git() {
 
 # <<< src/bootstrap/20_configure_git.bash <<<
 
-# >>> src/bootstrap/21_ensure_ssh_keygen.bash >>>
+# >>> src/bootstrap/21_install_ssh_keys.bash >>>
 # ---------------------------------------------------------------------------
 # 9b. Install SSH keys supplied via $AAB_GH_AUTH_SSH_PRIVATE_KEY_B64 (for
 # github.com auth: clone/push over SSH) and/or
@@ -1717,9 +1771,9 @@ configure_git() {
 # neither. The signing key path does NOT touch ~/.ssh/config.
 # ---------------------------------------------------------------------------
 
-# _ensure_ssh_keygen: Verify the pinned openssh-client package supplied
+# _require_ssh_keygen: Verify the pinned openssh-client package supplied
 # ssh-keygen. Package installation is centralized in install_base_deps().
-_ensure_ssh_keygen() {
+_require_ssh_keygen() {
     command -v ssh-keygen >/dev/null 2>&1 && return 0
     warn "ssh-keygen is unavailable after installing the pinned apt package list."
     return 1
@@ -1810,7 +1864,7 @@ install_auth_ssh_key() {
         warn "base64 not installed; cannot decode ${label}; skipping."
         return
     fi
-    _ensure_ssh_keygen || { warn "Skipping ${label} install (ssh-keygen unavailable)."; return; }
+    _require_ssh_keygen || { warn "Skipping ${label} install (ssh-keygen unavailable)."; return; }
     _decode_ssh_key "$encoded" "$AUTH_KEY" "$label" || return 0
 
     _rewrite_ssh_config_block "$AUTH_KEY"
@@ -1830,7 +1884,7 @@ install_signing_ssh_key() {
         warn "base64 not installed; cannot decode ${label}; skipping."
         return
     fi
-    _ensure_ssh_keygen || { warn "Skipping ${label} install (ssh-keygen unavailable)."; return; }
+    _require_ssh_keygen || { warn "Skipping ${label} install (ssh-keygen unavailable)."; return; }
     _decode_ssh_key "$encoded" "$SIGNING_KEY" "$label" || return 0
 
     if command -v git >/dev/null 2>&1; then
@@ -1843,7 +1897,7 @@ install_signing_ssh_key() {
         warn "git not installed; skipping SSH signing config."
     fi
 }
-# <<< src/bootstrap/21_ensure_ssh_keygen.bash <<<
+# <<< src/bootstrap/21_install_ssh_keys.bash <<<
 
 # >>> src/bootstrap/22_install_gitleaks.bash >>>
 # ---------------------------------------------------------------------------
@@ -1940,7 +1994,7 @@ install_gitleaks() {
 
 # <<< src/bootstrap/22_install_gitleaks.bash <<<
 
-# >>> src/bootstrap/23_emit_git_hook_script.bash >>>
+# >>> src/bootstrap/23_install_git_hooks.bash >>>
 # ---------------------------------------------------------------------------
 # 9c. Install a global git hook that enforces the bootstrap-configured git
 # identity (and signing, when configured) on every commit, regardless of the
@@ -1958,7 +2012,7 @@ install_gitleaks() {
 # the failure that motivated it: an agent committed a live GitHub admin token
 # because nothing scanned the diff locally.
 #
-# emit_git_hook_script writes the dispatcher to stdout so it can be both
+# _render_git_hook_script writes the dispatcher to stdout so it can be both
 # installed and linted (test.bash --lint shellchecks the emitted script). The
 # dispatcher reads the expected identity from --global (which -c / env / config
 # overrides cannot poison) and the actual identity from `git var`, which does
@@ -1966,7 +2020,7 @@ install_gitleaks() {
 # own hook of the same name so projects that ship hooks keep working — a global
 # core.hooksPath replaces the per-repo hooks dir rather than adding to it.
 # ---------------------------------------------------------------------------
-emit_git_hook_script() {
+_render_git_hook_script() {
     cat <<'HOOK'
 #!/usr/bin/env bash
 # autonomous-agent-bootstrap global git hook dispatcher. Installed by
@@ -2183,7 +2237,7 @@ install_git_hooks() {
     mkdir -p "${GIT_HOOKS_DIR}"
     local tmp
     tmp=$(mktemp "${GIT_HOOK_DISPATCHER}.tmp.XXXXXX")
-    emit_git_hook_script > "$tmp"
+    _render_git_hook_script > "$tmp"
     chmod 0755 "$tmp"
     mv -f "$tmp" "${GIT_HOOK_DISPATCHER}"
 
@@ -2195,10 +2249,9 @@ install_git_hooks() {
     git config --global core.hooksPath "${GIT_HOOKS_DIR}"
     log "Installed global git hooks at ${GIT_HOOKS_DIR} and set core.hooksPath (enforces the global commit identity and scans staged commits for secrets)."
 }
+# <<< src/bootstrap/23_install_git_hooks.bash <<<
 
-# <<< src/bootstrap/23_emit_git_hook_script.bash <<<
-
-# >>> src/bootstrap/24_emit_agent_rules.bash >>>
+# >>> src/bootstrap/24_write_agent_rules.bash >>>
 # ---------------------------------------------------------------------------
 # 9d. Write the global agent rules to every harness's instruction file. Claude
 # Code reads ~/.claude/CLAUDE.md and Codex reads ~/.codex/AGENTS.md for every
@@ -2209,7 +2262,7 @@ install_git_hooks() {
 # text so re-runs can replace it without adding management comments to the
 # instruction files. Pre-existing user content in either file is preserved.
 # ---------------------------------------------------------------------------
-emit_agent_rules() {
+_render_agent_rules() {
     cat <<'RULES'
 ## Operating principles
 
@@ -2228,7 +2281,7 @@ write_agent_rules() {
     local current_rules previous_rules
     current_rules=$(mktemp)
     previous_rules=$(mktemp)
-    emit_agent_rules > "$current_rules"
+    _render_agent_rules > "$current_rules"
     if [ -f "$AGENT_RULES_STATE_FILE" ]; then
         cp "$AGENT_RULES_STATE_FILE" "$previous_rules"
     else
@@ -2280,7 +2333,7 @@ PY
     mv "$current_rules" "$AGENT_RULES_STATE_FILE"
     rm -f "$previous_rules"
 }
-# <<< src/bootstrap/24_emit_agent_rules.bash <<<
+# <<< src/bootstrap/24_write_agent_rules.bash <<<
 
 # >>> src/bootstrap/25_install_agent_plugins.bash >>>
 # ---------------------------------------------------------------------------
@@ -2292,27 +2345,37 @@ PY
 # marketplace name and plugin names, then install the same resolved plugin
 # selectors into both CLIs.
 #
-# The list is taken from (in order): $AAB_AGENT_PLUGINS_FILE, then
-# ./agent_plugins.txt when present, otherwise $AAB_AGENT_PLUGINS_URL.
+# The compiler embeds agent_plugins.txt below. AAB_AGENT_PLUGINS_FILE can
+# replace the compiled list for a one-off local build.
 # ---------------------------------------------------------------------------
-PLUGINS_DEFAULT_FILE="${PWD}/agent_plugins.txt"
-PLUGINS_DEFAULT_URL="https://raw.githubusercontent.com/${AAB_BOOTSTRAP_REPO}/${AAB_BOOTSTRAP_REF}/agent_plugins.txt"
+AGENT_PLUGINS_DEFAULT_CONTENT=$(cat <<'AAB_AGENT_PLUGINS_EOF'
+# Agent plugin marketplaces installed by bootstrap.bash.
+#
+# One GitHub "owner/repo" per line. The repo must contain
+# .claude-plugin/marketplace.json at the repository root. Claude Code and
+# Codex both read that marketplace manifest to discover the marketplace
+# name and the plugin name(s) to install.
+#
+# Lines beginning with '#' and blank lines are ignored. To install
+# additional plugins, add their marketplace repos below.
+
+brycelelbach/agitentic
+brycelelbach-private/autocuda
+AAB_AGENT_PLUGINS_EOF
+)
 install_agent_plugins() {
     command -v python3 >/dev/null 2>&1 || { warn "python3 required for plugin install; skipping."; return; }
     local plugins_file="${AAB_AGENT_PLUGINS_FILE:-}"
-    local plugins_url="${AAB_AGENT_PLUGINS_URL:-$PLUGINS_DEFAULT_URL}"
-    local content=""
-    if [ -n "$plugins_file" ] && [ -f "$plugins_file" ]; then
+    local content="$AGENT_PLUGINS_DEFAULT_CONTENT"
+    if [ -n "$plugins_file" ]; then
+        if [ ! -f "$plugins_file" ]; then
+            warn "Plugin list file ${plugins_file} does not exist; skipping plugin install."
+            return
+        fi
         content=$(cat "$plugins_file")
-        log "Reading plugin list from ${plugins_file}."
-    elif [ -z "$plugins_file" ] && [ -f "$PLUGINS_DEFAULT_FILE" ]; then
-        content=$(cat "$PLUGINS_DEFAULT_FILE")
-        log "Reading plugin list from ${PLUGINS_DEFAULT_FILE}."
-    elif content=$(curl -fsSL "$plugins_url" 2>/dev/null); then
-        log "Fetched plugin list from ${plugins_url}."
+        log "Reading plugin list override from ${plugins_file}."
     else
-        warn "Could not read plugin list (file=${plugins_file:-unset}, url=${plugins_url}); skipping plugin install."
-        return
+        log "Reading plugin list compiled into bootstrap.bash."
     fi
 
     # Strip comments and blanks into one repo per line.
@@ -3207,26 +3270,24 @@ main() {
     install_codex
     install_pi
     install_brev
-    configure_brev_auth
     install_lifeboat
     install_gh
+    install_gitleaks
     write_aab_env_file
+    configure_brev
     configure_claude
     configure_codex
     write_pi_models_config
-    skip_brev_onboarding
     configure_git
     install_auth_ssh_key
     install_signing_ssh_key
-    install_gitleaks
     install_git_hooks
     write_agent_rules
     install_agent_plugins
     install_claude_launcher
     install_codex_launcher
     install_pi_launcher
-    install_private_autocuda
-    run_autocuda_install
+    install_autocuda
     enable_user_linger
     update_bashrc
     update_profile
