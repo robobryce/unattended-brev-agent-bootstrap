@@ -1,7 +1,7 @@
 # Generated autonomous-agent-bootstrap artifact
 
 Source branch: refactor/compiled-bootstrap
-Source commit: b4c6ca63063f16d4fa821e5ab375f1fcb6e56feb
+Source commit: 2383e578cd74c9be38c0862ba7d3d711b5bda604
 
 Curl this generated artifact with:
 
