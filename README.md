@@ -1,7 +1,7 @@
 # Generated autonomous-agent-bootstrap artifact
 
 Source branch: fix/agents-md-managed-markers
-Source commit: b9b05d49f67afc7ef0917777aa8b3398b68aad02
+Source commit: 16062bbe39a4e2a170e5433055f0f104540ae35c
 
 Curl this generated artifact with:
 
