@@ -445,7 +445,7 @@ install_lifeboat() {
 
 # <<< src/bootstrap/07_install_lifeboat.bash <<<
 
-# >>> src/bootstrap/08_ensure_gh.bash >>>
+# >>> src/bootstrap/08_install_gh.bash >>>
 # ---------------------------------------------------------------------------
 # 4. Install a pinned gh CLI standalone release. gh intentionally does not use
 # apt so every apt invocation remains centralized in install_base_deps().
@@ -454,7 +454,7 @@ GH_VERSION="2.96.0"
 GH_SHA256_LINUX_AMD64="83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60"
 GH_SHA256_LINUX_ARM64="06f86ec7103d41993b76cd78072f43595c34aaa56506d971d9860e67140bf909"
 
-ensure_gh() {
+install_gh() {
     if command -v gh >/dev/null 2>&1 \
         && gh --version 2>/dev/null | head -n 1 | grep -q "gh version ${GH_VERSION} "; then
         log "gh ${GH_VERSION} already installed."
@@ -499,7 +499,7 @@ ensure_gh() {
     rm -rf "$tmp_dir"
     log "Installed gh ${GH_VERSION} to ${HOME}/.local/bin/gh."
 }
-# <<< src/bootstrap/08_ensure_gh.bash <<<
+# <<< src/bootstrap/08_install_gh.bash <<<
 
 # >>> src/bootstrap/09_ensure_uv.bash >>>
 # ---------------------------------------------------------------------------
@@ -3209,7 +3209,7 @@ main() {
     install_brev
     configure_brev_auth
     install_lifeboat
-    ensure_gh
+    install_gh
     write_aab_env_file
     configure_claude
     configure_codex
