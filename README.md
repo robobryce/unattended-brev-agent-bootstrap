@@ -1,7 +1,7 @@
 # Generated autonomous-agent-bootstrap artifact
 
 Source branch: refactor/configurable-model-profiles
-Source commit: 66456cc598d8d50367e582f2b1aa4b4049bf9fa5
+Source commit: 496f194e2d0b4f9230ce466f715979ca1001499f
 
 Curl this generated artifact with:
 

@@ -114,9 +114,6 @@ CLAUDE_MEMORY_FILE="${CLAUDE_DIR}/CLAUDE.md"
 CODEX_AGENTS_FILE="${CODEX_DIR}/AGENTS.md"
 AGENT_RULES_MARKER_BEGIN="# >>> autonomous-agent-bootstrap >>>"
 AGENT_RULES_MARKER_END="# <<< autonomous-agent-bootstrap <<<"
-ETC_ENV="/etc/environment"
-ETC_ENV_MARKER_BEGIN="# >>> autonomous-agent-bootstrap >>>"
-ETC_ENV_MARKER_END="# <<< autonomous-agent-bootstrap <<<"
 # Path to the uv binary, resolved by ensure_uv and consumed by the uv tool
 # install steps.
 UV_BIN=""
@@ -836,6 +833,40 @@ write_settings() {
 JSON
     log "Wrote ${SETTINGS_FILE} (profile=${profile[source]}/${profile[name]}, model=${model}, effort=${effort})."
     write_claude_managed_settings
+}
+# Skip Claude Code's first-run theme prompt and pre-approve the
+# first-party API-key fingerprint when one is set. Both gates live in
+# ~/.claude.json, so preserve unrelated authentication and user fields.
+skip_claude_onboarding() {
+    command -v python3 >/dev/null 2>&1 || { log "ERROR: python3 required to edit ~/.claude.json."; exit 1; }
+    python3 - "${CLAUDE_JSON}" "${ANTHROPIC_API_KEY:-}" <<'PY'
+import json, os, shutil, sys, time
+path = sys.argv[1]
+api_key = sys.argv[2] if len(sys.argv) > 2 else ""
+data = {}
+if os.path.exists(path):
+    backup = f"{path}.bak.{time.strftime('%Y%m%d-%H%M%S')}"
+    shutil.copy2(path, backup)
+    print(f"[bootstrap] Backed up existing .claude.json -> {backup}.")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        data = {}
+data["hasCompletedOnboarding"] = True
+if api_key:
+    fp = api_key[-20:]
+    resp = data.setdefault("customApiKeyResponses", {})
+    approved = resp.setdefault("approved", [])
+    if fp not in approved:
+        approved.append(fp)
+    resp.setdefault("rejected", [])
+    print(f"[bootstrap] Pre-approved ANTHROPIC_API_KEY fingerprint ...{fp}.")
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
+    json.dump(data, f, indent=2)
+print(f"[bootstrap] Set hasCompletedOnboarding=true in {path}.")
+PY
 }
 # <<< src/bootstrap/13_claude_config.bash <<<
 
@@ -1612,52 +1643,6 @@ configure_codex_auth() {
     log "Configured Codex API-key auth from OPENAI_API_KEY."
 }
 # <<< src/bootstrap/17_configure_codex_auth.bash <<<
-
-# >>> src/bootstrap/18_skip_onboarding.bash >>>
-# ---------------------------------------------------------------------------
-# 7. Skip the first-run onboarding (theme prompt) AND pre-approve the
-# ANTHROPIC_API_KEY fingerprint if one is set.
-#
-# Both gates live in ~/.claude.json (NOT ~/.claude/settings.json):
-#   - hasCompletedOnboarding controls the theme / color-scheme wizard
-#   - customApiKeyResponses.approved is a list of API-key fingerprints
-#     (last 20 chars of the key); if the runtime ANTHROPIC_API_KEY matches
-#     one, Claude starts without prompting for approval.
-# We merge into an existing .claude.json rather than overwriting so we
-# preserve auth tokens, userID, and any prior approvals.
-# ---------------------------------------------------------------------------
-skip_onboarding() {
-    command -v python3 >/dev/null 2>&1 || { log "ERROR: python3 required to edit ~/.claude.json."; exit 1; }
-    python3 - "${CLAUDE_JSON}" "${ANTHROPIC_API_KEY:-}" <<'PY'
-import json, os, shutil, sys, time
-path = sys.argv[1]
-api_key = sys.argv[2] if len(sys.argv) > 2 else ""
-data = {}
-if os.path.exists(path):
-    backup = f"{path}.bak.{time.strftime('%Y%m%d-%H%M%S')}"
-    shutil.copy2(path, backup)
-    print(f"[bootstrap] Backed up existing .claude.json -> {backup}.")
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        data = {}
-data["hasCompletedOnboarding"] = True
-if api_key:
-    fp = api_key[-20:]
-    resp = data.setdefault("customApiKeyResponses", {})
-    approved = resp.setdefault("approved", [])
-    if fp not in approved:
-        approved.append(fp)
-    resp.setdefault("rejected", [])
-    print(f"[bootstrap] Pre-approved ANTHROPIC_API_KEY fingerprint ...{fp}.")
-fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-with os.fdopen(fd, "w") as f:
-    json.dump(data, f, indent=2)
-print(f"[bootstrap] Set hasCompletedOnboarding=true in {path}.")
-PY
-}
-# <<< src/bootstrap/18_skip_onboarding.bash <<<
 
 # >>> src/bootstrap/19_skip_brev_onboarding.bash >>>
 # ---------------------------------------------------------------------------
@@ -3079,34 +3064,6 @@ update_profile() {
 }
 # <<< src/bootstrap/27_update_bashrc.bash <<<
 
-# >>> src/bootstrap/29_update_etc_environment.bash >>>
-# ---------------------------------------------------------------------------
-# 12. Remove stale /etc/environment managed blocks from older installs.
-# ---------------------------------------------------------------------------
-update_etc_environment() {
-    [ -f "$ETC_ENV" ] || return 0
-    grep -qF "$ETC_ENV_MARKER_BEGIN" "$ETC_ENV" || return 0
-
-    if [ -n "$SUDO" ] && ! sudo -n true 2>/dev/null; then
-        warn "Updating $ETC_ENV needs sudo and passwordless sudo is not available; stale AAB env vars may remain there."
-        return
-    fi
-
-    local tmp
-    tmp=$(mktemp)
-    awk -v begin="${ETC_ENV_MARKER_BEGIN}" -v end="${ETC_ENV_MARKER_END}" '
-        $0 == begin { skip=1; next }
-        $0 == end   { skip=0; next }
-        !skip { print }
-    ' "$ETC_ENV" > "$tmp"
-
-    $SUDO install -m 0644 "$tmp" "$ETC_ENV"
-    rm -f "$tmp"
-    log "Removed autonomous-agent-bootstrap block from $ETC_ENV."
-}
-
-# <<< src/bootstrap/29_update_etc_environment.bash <<<
-
 # >>> src/bootstrap/30_load_config_file.bash >>>
 # ---------------------------------------------------------------------------
 # Optional config input (positional arg or stdin).
@@ -3195,7 +3152,7 @@ main() {
     write_codex_config
     write_pi_models_config
     configure_codex_auth
-    skip_onboarding
+    skip_claude_onboarding
     skip_brev_onboarding
     configure_git
     install_auth_ssh_key
@@ -3211,7 +3168,6 @@ main() {
     run_autocuda_install
     update_bashrc
     update_profile
-    update_etc_environment
     log "Done. Open a new shell (or 'source ~/.bashrc') so PATH updates take effect."
 }
 
