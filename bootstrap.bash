@@ -58,6 +58,8 @@ CLAUDE_MANAGED_SETTINGS_FILE="${CLAUDE_MANAGED_SETTINGS_FILE:-/etc/claude-code/m
 CLAUDE_JSON="${HOME}/.claude.json"
 AAB_DIR="${HOME}/.aab"
 AAB_ENV_FILE="${AAB_DIR}/.env"
+AAB_SHELL_CONFIG_DIR="${AAB_DIR}/shell"
+CLAUDE_SHELL_CONFIG_FILE="${AAB_SHELL_CONFIG_DIR}/claude.env"
 CODEX_DIR="${HOME}/.codex"
 CODEX_CONFIG="${CODEX_DIR}/config.toml"
 CODEX_MODEL_INSTRUCTIONS_FILE="${CODEX_DIR}/codex-instructions.md"
@@ -151,7 +153,7 @@ SUDO=$(need_sudo)
 
 # >>> src/bootstrap/01_install_base_deps.bash >>>
 # ---------------------------------------------------------------------------
-# 0. Install the Debian base dependencies listed in apt_packages.txt via
+# 0. Install the pinned Ubuntu base dependencies listed in apt_packages.txt via
 # apt-get. Bare container images (e.g. ubuntu:22.04) ship with apt-get but
 # nothing else, so we can't assume curl or python3 exist. apt no-ops packages
 # that are already installed, so the whole list is installed unconditionally.
@@ -186,6 +188,13 @@ install_base_deps() {
         line="${line#"${line%%[![:space:]]*}"}"
         line="${line%"${line##*[![:space:]]}"}"
         [ -z "$line" ] && continue
+        case "$line" in
+            *=?*) ;;
+            *)
+                warn "apt package entry '${line}' is not version-pinned (expected package=version)."
+                return 1
+                ;;
+        esac
         packages+=("$line")
     done <<< "$content"
 
@@ -203,7 +212,7 @@ install_base_deps() {
         return
     fi
 
-    log "Installing base deps: ${packages[*]}."
+    log "Installing pinned apt packages: ${packages[*]}."
     $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -y
     $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
 }
@@ -475,33 +484,58 @@ install_lifeboat() {
 
 # >>> src/bootstrap/08_ensure_gh.bash >>>
 # ---------------------------------------------------------------------------
-# 4. Install gh CLI from the official cli.github.com repo.
-#
-# Ubuntu / Debian ship an old gh that predates `gh auth token` and
-# `gh auth git-credential`. We specifically want those so the git
-# credential helper wired up in configure_git() below actually works.
+# 4. Install a pinned gh CLI standalone release. gh intentionally does not use
+# apt so every apt invocation remains centralized in install_base_deps().
 # ---------------------------------------------------------------------------
+GH_VERSION="2.96.0"
+GH_SHA256_LINUX_AMD64="83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60"
+GH_SHA256_LINUX_ARM64="06f86ec7103d41993b76cd78072f43595c34aaa56506d971d9860e67140bf909"
+
 ensure_gh() {
-    if [ -n "$SUDO" ] && ! sudo -n true 2>/dev/null; then
-        warn "gh install needs sudo and passwordless sudo is not available; skipping."
-        warn "Install gh manually from https://cli.github.com/ and re-run."
+    if command -v gh >/dev/null 2>&1 \
+        && gh --version 2>/dev/null | head -n 1 | grep -q "gh version ${GH_VERSION} "; then
+        log "gh ${GH_VERSION} already installed."
         return
     fi
-    if command -v apt-get >/dev/null 2>&1; then
-        log "Installing gh from cli.github.com apt repo."
-        local keyring=/usr/share/keyrings/githubcli-archive-keyring.gpg
-        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-            | $SUDO dd of="$keyring" status=none
-        $SUDO chmod go+r "$keyring"
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=$keyring] https://cli.github.com/packages stable main" \
-            | $SUDO tee /etc/apt/sources.list.d/github-cli.list >/dev/null
-        $SUDO apt-get update -y
-        $SUDO apt-get install -y gh
-    else
-        warn "apt-get not found — skipping gh install. Install manually from https://cli.github.com/."
-    fi
-}
 
+    local arch sha256
+    case "$(uname -m)" in
+        x86_64|amd64)
+            arch="amd64"
+            sha256="$GH_SHA256_LINUX_AMD64"
+            ;;
+        aarch64|arm64)
+            arch="arm64"
+            sha256="$GH_SHA256_LINUX_ARM64"
+            ;;
+        *)
+            warn "Unsupported architecture for gh ${GH_VERSION}: $(uname -m)."
+            return
+            ;;
+    esac
+
+    local tmp_dir archive extracted
+    tmp_dir=$(mktemp -d)
+    archive="${tmp_dir}/gh.tar.gz"
+    extracted="${tmp_dir}/gh_${GH_VERSION}_linux_${arch}/bin/gh"
+    if ! curl -fsSL \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.tar.gz" \
+        -o "$archive"; then
+        warn "Could not download gh ${GH_VERSION}."
+        rm -rf "$tmp_dir"
+        return
+    fi
+    if ! printf '%s  %s\n' "$sha256" "$archive" | sha256sum -c - >/dev/null; then
+        warn "Checksum verification failed for gh ${GH_VERSION}."
+        rm -rf "$tmp_dir"
+        return
+    fi
+    tar -xzf "$archive" -C "$tmp_dir"
+    mkdir -p "${HOME}/.local/bin"
+    install -m 0755 "$extracted" "${HOME}/.local/bin/gh"
+    rm -rf "$tmp_dir"
+    log "Installed gh ${GH_VERSION} to ${HOME}/.local/bin/gh."
+}
 # <<< src/bootstrap/08_ensure_gh.bash <<<
 
 # >>> src/bootstrap/09_ensure_uv.bash >>>
@@ -663,7 +697,7 @@ install_private_autocuda() {
 # Code's internal schema and drop top-level keys it doesn't enumerate (notably
 # `effortLevel`). Snapshot settings.json first and re-merge the AAB-managed
 # top-level keys after, mirroring install_claude_code_plugins, so the on-disk
-# shape stays a superset of what write_settings produced.
+# shape stays a superset of what write_claude_settings produced.
 # ---------------------------------------------------------------------------
 run_autocuda_install() {
     if ! command -v autocuda >/dev/null 2>&1; then
@@ -700,10 +734,9 @@ PY
         rm -f "$snapshot"
     fi
 }
-
 # <<< src/bootstrap/12_run_autocuda_install.bash <<<
 
-# >>> src/bootstrap/13_claude_config.bash >>>
+# >>> src/bootstrap/13_configure_claude.bash >>>
 # ---------------------------------------------------------------------------
 # 5. Write ~/.claude/settings.json.
 # ---------------------------------------------------------------------------
@@ -745,7 +778,7 @@ JSON
     log "Wrote ${CLAUDE_MANAGED_SETTINGS_FILE}."
 }
 
-write_settings() {
+write_claude_settings() {
     mkdir -p "${CLAUDE_DIR}"
     if [[ -f "${SETTINGS_FILE}" ]]; then
         local backup
@@ -867,7 +900,26 @@ with os.fdopen(fd, "w") as f:
 print(f"[bootstrap] Set hasCompletedOnboarding=true in {path}.")
 PY
 }
-# <<< src/bootstrap/13_claude_config.bash <<<
+
+# Write Claude-specific shell defaults to a dedicated file. The generic
+# ~/.bashrc integration sources every file in ~/.aab/shell instead of
+# hard-coding harness settings in the shell integration module.
+write_claude_shell_config() {
+    mkdir -p "${AAB_SHELL_CONFIG_DIR}"
+    printf '%s\n' \
+        '# Generated by autonomous-agent-bootstrap.' \
+        'export CLAUDE_CODE_SANDBOXED=1' \
+        'export DEBUG_SDK=1' > "${CLAUDE_SHELL_CONFIG_FILE}"
+    chmod 0644 "${CLAUDE_SHELL_CONFIG_FILE}"
+    log "Wrote Claude shell configuration to ${CLAUDE_SHELL_CONFIG_FILE}."
+}
+
+configure_claude() {
+    write_claude_settings
+    write_claude_shell_config
+    skip_claude_onboarding
+}
+# <<< src/bootstrap/13_configure_claude.bash <<<
 
 # >>> src/bootstrap/14_model_profiles.bash >>>
 # ---------------------------------------------------------------------------
@@ -1195,7 +1247,7 @@ write_aab_env_file() {
 }
 # <<< src/bootstrap/14_write_aab_env_file.bash <<<
 
-# >>> src/bootstrap/15_emit_codex_model_instructions.bash >>>
+# >>> src/bootstrap/15_configure_codex.bash >>>
 # ---------------------------------------------------------------------------
 # 7. Write the global Codex model instructions. model_instructions_file
 # replaces Codex's built-in model instructions, so this is a complete prompt,
@@ -1369,9 +1421,6 @@ write_codex_model_instructions() {
     log "Wrote global Codex model instructions to ${CODEX_MODEL_INSTRUCTIONS_FILE}."
 }
 
-# <<< src/bootstrap/15_emit_codex_model_instructions.bash <<<
-
-# >>> src/bootstrap/16_codex_config.bash >>>
 # ---------------------------------------------------------------------------
 # Write ~/.codex/config.toml.
 # ---------------------------------------------------------------------------
@@ -1518,7 +1567,47 @@ TOML
 
     log "Wrote ${CODEX_CONFIG} (profile=${profile[source]}/${profile[name]}, model=${model}, effort=${effort}, service_tier=${service_tier}, agent_max_threads=${agent_max_threads}, approval=never, sandbox=danger-full-access)."
 }
-# <<< src/bootstrap/16_codex_config.bash <<<
+
+# ---------------------------------------------------------------------------
+# 6b. Configure Codex API-key auth.
+#
+# `codex login --with-api-key` reads the key from stdin and writes Codex's
+# own auth cache, which makes first launch non-interactive even when no
+# ChatGPT/device-code login exists. When the caller provides a key, failure
+# is fatal so the bootstrap never silently leaves Codex on an interactive
+# auth path.
+# ---------------------------------------------------------------------------
+configure_codex_auth() {
+    local api_key="${OPENAI_API_KEY:-}"
+    [ -z "$api_key" ] && return
+
+    local codex_bin=""
+    if [ -x "${HOME}/.local/bin/codex-aab-real" ]; then
+        codex_bin="${HOME}/.local/bin/codex-aab-real"
+    elif command -v codex >/dev/null 2>&1; then
+        codex_bin=$(command -v codex)
+    elif [ -x "${HOME}/.local/bin/codex" ]; then
+        codex_bin="${HOME}/.local/bin/codex"
+    else
+        warn "codex binary not on PATH; cannot configure OPENAI_API_KEY auth."
+        exit 1
+    fi
+
+    if ! printf '%s' "$api_key" | "$codex_bin" login --with-api-key >/dev/null; then
+        warn "codex login --with-api-key failed; cannot configure Codex API-key auth."
+        exit 1
+    fi
+
+    log "Configured Codex API-key auth from OPENAI_API_KEY."
+}
+
+configure_codex() {
+    write_codex_model_instructions
+    write_codex_config
+    configure_codex_auth
+}
+
+# <<< src/bootstrap/15_configure_codex.bash <<<
 
 # >>> src/bootstrap/16_pi_config.bash >>>
 # ---------------------------------------------------------------------------
@@ -1608,41 +1697,6 @@ PY
 }
 # <<< src/bootstrap/16_pi_config.bash <<<
 
-# >>> src/bootstrap/17_configure_codex_auth.bash >>>
-# ---------------------------------------------------------------------------
-# 6b. Configure Codex API-key auth.
-#
-# `codex login --with-api-key` reads the key from stdin and writes Codex's
-# own auth cache, which makes first launch non-interactive even when no
-# ChatGPT/device-code login exists. When the caller provides a key, failure
-# is fatal so the bootstrap never silently leaves Codex on an interactive
-# auth path.
-# ---------------------------------------------------------------------------
-configure_codex_auth() {
-    local api_key="${OPENAI_API_KEY:-}"
-    [ -z "$api_key" ] && return
-
-    local codex_bin=""
-    if [ -x "${HOME}/.local/bin/codex-aab-real" ]; then
-        codex_bin="${HOME}/.local/bin/codex-aab-real"
-    elif command -v codex >/dev/null 2>&1; then
-        codex_bin=$(command -v codex)
-    elif [ -x "${HOME}/.local/bin/codex" ]; then
-        codex_bin="${HOME}/.local/bin/codex"
-    else
-        warn "codex binary not on PATH; cannot configure OPENAI_API_KEY auth."
-        exit 1
-    fi
-
-    if ! printf '%s' "$api_key" | "$codex_bin" login --with-api-key >/dev/null; then
-        warn "codex login --with-api-key failed; cannot configure Codex API-key auth."
-        exit 1
-    fi
-
-    log "Configured Codex API-key auth from OPENAI_API_KEY."
-}
-# <<< src/bootstrap/17_configure_codex_auth.bash <<<
-
 # >>> src/bootstrap/19_skip_brev_onboarding.bash >>>
 # ---------------------------------------------------------------------------
 # 8. Write ~/.brev/onboarding_step.json to disable the Brev interactive tutorial.
@@ -1700,21 +1754,12 @@ configure_git() {
 # neither. The signing key path does NOT touch ~/.ssh/config.
 # ---------------------------------------------------------------------------
 
-# _ensure_ssh_keygen: Idempotently install openssh-client if ssh-keygen is
-# missing. Returns 0 iff ssh-keygen is callable afterward.
+# _ensure_ssh_keygen: Verify the pinned openssh-client package supplied
+# ssh-keygen. Package installation is centralized in install_base_deps().
 _ensure_ssh_keygen() {
     command -v ssh-keygen >/dev/null 2>&1 && return 0
-    if ! command -v apt-get >/dev/null 2>&1; then
-        warn "ssh-keygen not installed and apt-get unavailable."
-        return 1
-    fi
-    if [ -n "$SUDO" ] && ! sudo -n true 2>/dev/null; then
-        warn "ssh-keygen not installed and passwordless sudo unavailable."
-        return 1
-    fi
-    log "Installing openssh-client for ssh-keygen."
-    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-client
-    command -v ssh-keygen >/dev/null 2>&1
+    warn "ssh-keygen is unavailable after installing the pinned apt package list."
+    return 1
 }
 
 # _decode_ssh_key <encoded> <dest> <label>
@@ -1835,7 +1880,6 @@ install_signing_ssh_key() {
         warn "git not installed; skipping SSH signing config."
     fi
 }
-
 # <<< src/bootstrap/21_ensure_ssh_keygen.bash <<<
 
 # >>> src/bootstrap/22_install_gitleaks.bash >>>
@@ -2391,7 +2435,7 @@ install_claude_code_plugins() {
     local -a tuples=("$@")
     [ ${#tuples[@]} -eq 0 ] && return
 
-    # Merge into ~/.claude/settings.json. write_settings has already run,
+    # Merge into ~/.claude/settings.json. write_claude_settings has already run,
     # so the file exists and is valid JSON.
     python3 - "$SETTINGS_FILE" "${tuples[@]}" <<'PY'
 import json, sys
@@ -2437,7 +2481,7 @@ PY
         github_env=(env "GH_TOKEN=$github_token")
     fi
 
-    # Snapshot the post-write_settings + post-merge settings.json so
+    # Snapshot the post-write_claude_settings + post-merge settings.json so
     # the re-merge below can restore AAB-managed top-level keys that
     # Claude Code's plugin CLI strips on re-serialise.
     cp "$SETTINGS_FILE" "${SETTINGS_FILE}.pre-plugin-install.bak"
@@ -2470,10 +2514,10 @@ PY
     # user` re-serialise ~/.claude/settings.json against Claude Code's
     # internal schema, which drops any top-level keys the schema
     # doesn't enumerate (notably `effortLevel` — written by
-    # write_settings, asserted by tests/e2e-assertions.bash). Re-merge
+    # write_claude_settings, asserted by tests/e2e-assertions.bash). Re-merge
     # the AAB-managed top-level keys back in from a snapshot taken
     # before the claude calls ran so the on-disk shape stays a
-    # superset of what write_settings produced.
+    # superset of what write_claude_settings produced.
     if [ -f "${SETTINGS_FILE}.pre-plugin-install.bak" ]; then
         python3 - "$SETTINGS_FILE" "${SETTINGS_FILE}.pre-plugin-install.bak" <<'PY'
 import json, sys
@@ -2538,10 +2582,9 @@ install_codex_plugins() {
             warn "codex plugin add ${plugin}@${marketplace} returned non-zero."
     done
 }
-
 # <<< src/bootstrap/25_install_agent_plugins.bash <<<
 
-# >>> src/bootstrap/26_is_aab_launcher_symlink_target.bash >>>
+# >>> src/bootstrap/26_install_launchers.bash >>>
 # ---------------------------------------------------------------------------
 # Install profile-driven Claude, Codex, and Pi launcher families.
 # ---------------------------------------------------------------------------
@@ -2975,7 +3018,8 @@ install_pi_launcher() {
     _write_pi_launcher "${selected[name]}" "${selected[model]}" "${selected[effort]}" "$pi_bin"
     log "Installed Pi profile launchers (selected=${selected[name]})."
 }
-# <<< src/bootstrap/26_is_aab_launcher_symlink_target.bash <<<
+
+# <<< src/bootstrap/26_install_launchers.bash <<<
 
 # >>> src/bootstrap/27_update_bashrc.bash >>>
 # ---------------------------------------------------------------------------
@@ -3009,16 +3053,16 @@ update_bashrc() {
             '# ~/.local/bin also carries the uv tool symlinks (ruff,' \
             '# pre-commit, autocuda), so a bare `ruff` / `pre-commit` resolves' \
             '# there ahead of the system dirs.' \
-            '# DEBUG_SDK=1 turns on Claude Code debug logging, written to' \
-            '# ~/.claude/debug/<uuid>.txt with latest symlinked to the current' \
-            '# run and verbose tags enabled by the DEBUG_SDK gate.' \
             'if [ -f "$HOME/.local/bin/env" ]; then' \
             '    . "$HOME/.local/bin/env"' \
             'fi' \
             'export PATH="$HOME/.local/bin:$PATH"' \
             'export PATH="$HOME/.local/aab-bin:$PATH"' \
-            'export CLAUDE_CODE_SANDBOXED=1' \
-            'export DEBUG_SDK=1' \
+            '# Source harness-specific, non-secret shell defaults.' \
+            'for _aab_shell_config in "$HOME"/.aab/shell/*.env; do' \
+            '    [ -f "$_aab_shell_config" ] && . "$_aab_shell_config"' \
+            'done' \
+            'unset _aab_shell_config' \
             '# Neutralize a dead SSH agent socket. A forwarded SSH_AUTH_SOCK from' \
             '# an SSH login that has since disconnected lingers as a dead socket,' \
             '# and tmux re-injects it into every new pane. Nothing here consumes' \
@@ -3166,13 +3210,10 @@ main() {
     configure_brev_auth
     install_lifeboat
     ensure_gh
-    write_settings
     write_aab_env_file
-    write_codex_model_instructions
-    write_codex_config
+    configure_claude
+    configure_codex
     write_pi_models_config
-    configure_codex_auth
-    skip_claude_onboarding
     skip_brev_onboarding
     configure_git
     install_auth_ssh_key
