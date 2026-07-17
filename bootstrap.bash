@@ -73,9 +73,6 @@ AAB_BOOTSTRAP_REPO="${AAB_BOOTSTRAP_REPO:-robobryce/autonomous-agent-bootstrap}"
 AAB_BOOTSTRAP_REF="${AAB_BOOTSTRAP_REF:-generated/refactor/configurable-model-profiles}"
 BASHRC_MARKER_BEGIN="# >>> autonomous-agent-bootstrap >>>"
 BASHRC_MARKER_END="# <<< autonomous-agent-bootstrap <<<"
-TMUX_CONFIG="${HOME}/.tmux.conf"
-TMUX_MARKER_BEGIN="# >>> autonomous-agent-bootstrap >>>"
-TMUX_MARKER_END="# <<< autonomous-agent-bootstrap <<<"
 SSH_DIR="${HOME}/.ssh"
 SSH_CONFIG="${SSH_DIR}/config"
 AUTH_KEY="${SSH_DIR}/id_aab_auth"
@@ -195,21 +192,6 @@ install_base_deps() {
         [ -z "$line" ] && continue
         packages+=("$line")
     done <<< "$content"
-
-    # tmux is required even when a custom package list replaces the default.
-    # Avoid adding it when the command already exists or the list includes it.
-    if ! command -v tmux >/dev/null 2>&1; then
-        local package tmux_listed=false
-        for package in "${packages[@]}"; do
-            if [ "$package" = "tmux" ]; then
-                tmux_listed=true
-                break
-            fi
-        done
-        if [ "$tmux_listed" = false ]; then
-            packages+=(tmux)
-        fi
-    fi
 
     if [ ${#packages[@]} -eq 0 ]; then
         log "apt package list is empty; skipping base dep install."
@@ -3097,37 +3079,6 @@ update_profile() {
 }
 # <<< src/bootstrap/27_update_bashrc.bash <<<
 
-# >>> src/bootstrap/28_update_tmux_config.bash >>>
-# ---------------------------------------------------------------------------
-# 11b. Enable mouse support in ~/.tmux.conf.
-#
-# Keep the setting in a managed block at the end of the file so it wins over
-# earlier user settings while preserving all configuration outside the block.
-# ---------------------------------------------------------------------------
-update_tmux_config() {
-    touch "${TMUX_CONFIG}"
-
-    local preserved
-    preserved=$(awk -v begin="${TMUX_MARKER_BEGIN}" -v end="${TMUX_MARKER_END}" '
-        $0 == begin { skip=1; next }
-        $0 == end   { skip=0; next }
-        !skip { print }
-    ' "${TMUX_CONFIG}")
-
-    {
-        if [ -n "$preserved" ]; then
-            printf '%s\n\n' "$preserved"
-        fi
-        printf '%s\n' "${TMUX_MARKER_BEGIN}"
-        printf '%s\n' 'set -g mouse on'
-        printf '%s\n' "${TMUX_MARKER_END}"
-    } > "${TMUX_CONFIG}"
-
-    log "Wrote autonomous-agent-bootstrap block to ${TMUX_CONFIG}."
-}
-
-# <<< src/bootstrap/28_update_tmux_config.bash <<<
-
 # >>> src/bootstrap/29_update_etc_environment.bash >>>
 # ---------------------------------------------------------------------------
 # 12. Remove stale /etc/environment managed blocks from older installs.
@@ -3260,7 +3211,6 @@ main() {
     run_autocuda_install
     update_bashrc
     update_profile
-    update_tmux_config
     update_etc_environment
     log "Done. Open a new shell (or 'source ~/.bashrc') so PATH updates take effect."
 }
