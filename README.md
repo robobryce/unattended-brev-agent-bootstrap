@@ -1,7 +1,7 @@
 # Generated autonomous-agent-bootstrap artifact
 
 Source branch: refactor/default-profile-selectors
-Source commit: cf008f41279fb55410439935aa670cd913904ce5
+Source commit: 03c04659bcf13767fae6aec658769866d079f91a
 
 Curl this generated artifact with:
 
