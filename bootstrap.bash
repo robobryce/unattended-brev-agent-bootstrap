@@ -215,7 +215,9 @@ install_base_deps() {
 
     log "Installing pinned apt packages: ${packages[*]}."
     $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -y
-    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
+    # Hosted Ubuntu images can carry newer packages from PPAs. The explicit
+    # pins are authoritative, so permit apt to restore the configured versions.
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades --no-install-recommends "${packages[@]}"
 }
 # <<< src/bootstrap/01_install_base_deps.bash <<<
 
