@@ -1018,7 +1018,8 @@ install_codex_plugins() {
 
 # >>> src/bootstrap/11_install_autocuda.bash >>>
 # ---------------------------------------------------------------------------
-# 4e. Install the private autocuda package as its own uv tool, best effort.
+# 4e. Install the private autocuda package as its own uv tool and run its
+# plugin registration, best effort.
 # autocuda lives behind brycelelbach-private, so it is not in uv_tools.txt — an
 # installer without repository access must not fail here. `uv tool install`
 # bundles autocuda's declared dependencies (matplotlib, pandas, adjustText,
@@ -1029,7 +1030,7 @@ install_codex_plugins() {
 # headers and a C compiler (in apt_packages.txt), so a host lacking that
 # toolchain degrades here rather than failing the bootstrap.
 # ---------------------------------------------------------------------------
-_install_autocuda_package() {
+install_autocuda() {
     install_uv
     [ -n "${UV_BIN:-}" ] || { warn "uv unavailable; skipping autocuda install."; return; }
 
@@ -1040,9 +1041,7 @@ _install_autocuda_package() {
     "${git_env[@]}" "$UV_BIN" tool install \
         "git+https://github.com/${AUTOCUDA_PRIVATE_REPO}@${AUTOCUDA_REF}" 2>&1 | sed 's/^/  /' \
         || warn "Could not install autocuda (private repo without access, or its build toolchain is absent); continuing without it."
-}
 
-_configure_autocuda() {
     if ! command -v autocuda >/dev/null 2>&1; then
         warn "autocuda not on PATH (its private install was skipped); skipping autocuda install."
         return
@@ -1076,11 +1075,6 @@ with open(live_path, "w") as f:
 PY
         rm -f "$snapshot"
     fi
-}
-
-install_autocuda() {
-    _install_autocuda_package
-    _configure_autocuda
 }
 # <<< src/bootstrap/11_install_autocuda.bash <<<
 
