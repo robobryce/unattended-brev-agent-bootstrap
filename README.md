@@ -1,7 +1,7 @@
 # Generated autonomous-agent-bootstrap artifact
 
 Source branch: add/modal-cli-uv-tool
-Source commit: 641ff3d31ba725eca8c7716103214b763ee9a54b
+Source commit: bcdec3bd50fa062e87f6d018edba4b7ebfb331c6
 
 Curl this generated artifact with:
 

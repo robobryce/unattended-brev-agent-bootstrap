@@ -65,6 +65,7 @@ GITHUB_SHELL_CONFIG_FILE="${AAB_SHELL_CONFIG_DIR}/github.env"
 CODEX_DIR="${HOME}/.codex"
 CODEX_CONFIG="${CODEX_DIR}/config.toml"
 CODEX_MODEL_INSTRUCTIONS_FILE="${CODEX_DIR}/codex-instructions.md"
+CODEX_GATEWAY_MODEL_CATALOG="${AAB_DIR}/codex-gateway-model-catalog.json"
 PI_DIR="${HOME}/.pi/agent"
 PI_SETTINGS_FILE="${PI_DIR}/settings.json"
 PI_MODELS_FILE="${PI_DIR}/models.json"
@@ -73,6 +74,7 @@ PI_NPM_DIR="${PI_DIR}/npm"
 PI_OBSERVABILITY_ENV_FILE="${AAB_SHELL_CONFIG_DIR}/pi-observability.env"
 PI_OBSERVABILITY_PRELOAD="${PI_NPM_DIR}/pi-observability-preload.cjs"
 PI_LIST_TOOLS_EXTENSION="${PI_DIR}/extensions/list-tools.ts"
+PI_FAST_MODE_EXTENSION="${PI_DIR}/extensions/fast-mode.ts"
 NODE_INSTALL_DIR="${HOME}/.local/share/aab/node"
 BREV_DIR="${HOME}/.brev"
 BREV_ONBOARDING="${BREV_DIR}/onboarding_step.json"
@@ -88,6 +90,7 @@ AUTH_KEY="${SSH_DIR}/id_aab_auth"
 AUTH_KEY_PUB="${AUTH_KEY}.pub"
 SIGNING_KEY="${SSH_DIR}/id_aab_signing"
 SIGNING_KEY_PUB="${SIGNING_KEY}.pub"
+GIT_ALLOWED_SIGNERS_FILE="${AAB_DIR}/git-allowed-signers"
 SSH_MARKER_BEGIN="# >>> autonomous-agent-bootstrap >>>"
 SSH_MARKER_END="# <<< autonomous-agent-bootstrap <<<"
 GIT_HOOKS_DIR="${AAB_DIR}/git-hooks"
@@ -151,10 +154,8 @@ SUDO=$(need_sudo)
 
 # >>> src/bootstrap/00_versions.bash >>>
 # ---------------------------------------------------------------------------
-# Versions for every non-apt package AAB installs. Keep release versions,
-# immutable git refs, and release-asset checksums together here so package
-# upgrades are reviewable in one place. Ubuntu packages remain in
-# apt_packages.txt; agent plugins remain in agent_plugins.txt.
+# Versions, immutable git refs, and release-asset checksums used directly by
+# bootstrap modules. Package-list pins remain in their sidecar files.
 # ---------------------------------------------------------------------------
 CLAUDE_CODE_VERSION="2.1.212"
 CODEX_VERSION="0.144.5"
@@ -178,9 +179,6 @@ GH_SHA256_LINUX_AMD64="83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b
 GH_SHA256_LINUX_ARM64="06f86ec7103d41993b76cd78072f43595c34aaa56506d971d9860e67140bf909"
 
 UV_VERSION="0.11.29"
-RUFF_VERSION="0.15.12"
-PRE_COMMIT_VERSION="4.6.0"
-MODAL_VERSION="1.5.2"
 
 AUTOCUDA_PRIVATE_REPO="robobryce/autocuda"
 AUTOCUDA_REF="5f26f2c5d73a0349e505548e1837832a4cb4fcb8"
@@ -688,10 +686,9 @@ install_gh() {
 #
 # The official installer wires ~/.local/bin into the managed ~/.bashrc /
 # ~/.profile blocks, which only affect future shells — it is not on this live
-# bootstrap process's PATH. uv's own shim and the executables `uv tool install`
-# symlinks (ruff, pre-commit, autocuda) all land there, so we prepend it to the
-# live PATH here, regardless of whether uv was already installed, so the
-# install steps that follow in this process can find the tools they install.
+# bootstrap process's PATH. uv's own shim and installed tool executables all
+# land there, so we prepend it to the live PATH here, regardless of whether uv
+# was already installed, so later install steps can find those tools.
 # ---------------------------------------------------------------------------
 install_uv() {
     if command -v uv >/dev/null 2>&1 \
@@ -739,9 +736,8 @@ _github_git_env() {
 # 4d. Install the CLI tools listed in uv_tools.txt with `uv tool install`. Each
 # tool gets its own isolated environment and its executables are symlinked into
 # ~/.local/bin, which the managed PATH and the live-PATH prepend in install_uv
-# both put ahead of the system dirs. This is the public, always-installable set
-# (ruff, pre-commit, Modal); the private autocuda package is installed separately
-# below. Idempotent: `uv tool install` is a no-op when the tool is already
+# both put ahead of the system dirs. The private autocuda package is installed
+# separately. Idempotent: `uv tool install` is a no-op when the tool is already
 # installed at the requested version.
 #
 # The list is taken from (in order): $AAB_UV_TOOLS_FILE, then ./uv_tools.txt
@@ -777,11 +773,6 @@ install_uv_tools() {
         line="${line#"${line%%[![:space:]]*}"}"
         line="${line%"${line##*[![:space:]]}"}"
         [ -z "$line" ] && continue
-        case "$line" in
-            ruff) line="ruff==${RUFF_VERSION}" ;;
-            pre-commit) line="pre-commit==${PRE_COMMIT_VERSION}" ;;
-            modal) line="modal==${MODAL_VERSION}" ;;
-        esac
         case "$line" in
             *==?*) ;;
             *)
@@ -1162,7 +1153,7 @@ PI_PLUGINS_DEFAULT_CONTENT=$(cat <<'AAB_PI_PLUGINS_EOF'
 npm:pi-codex-goal@0.1.37
 git:github.com/robobryce/pi-schedule-prompt@636ce73ece6ab77db023bf3613180290eb36db8f
 git:github.com/nicobailon/pi-subagents@ea9b72f2e5bc0e0cbaacdab589576e858b12c03f
-git:github.com/robobryce/pi-patty-bg-tasks@4598fe85060f81d646eb7e947d9684f4f1783a1e
+git:github.com/robobryce/pi-patty-bg-tasks@f48c6a124daa6283c7252e737d206157b1019868
 git:github.com/robobryce/pi-web-access@35f229561375d9223e0bc26fa6fa9c0df924d9c0
 git:github.com/robobryce/pi-retry-empty@c46c664bc46f86a8c8736fbbd6801daf25ebae86
 npm:pi-print-stream@0.1.0
@@ -1346,6 +1337,7 @@ _parse_model_profile_line() {
     result["max_tokens"]=""
     result[subagent]=""
     result[thinking]=""
+    result["fast"]=""
     case "$harness" in
         claude)
             result[effort]="$DEFAULT_CLAUDE_CODE_EFFORT"
@@ -1388,7 +1380,7 @@ _parse_model_profile_line() {
         seen_fields[$key]=1
 
         case "${harness}/${key}" in
-            claude/model|claude/effort|claude/context|claude/subagent|claude/haiku|claude/sonnet|claude/opus|codex/model|codex/effort|pi/model|pi/effort|pi/context|pi/max_tokens)
+            claude/model|claude/effort|claude/context|claude/subagent|claude/haiku|claude/sonnet|claude/opus|codex/model|codex/effort|codex/fast|pi/model|pi/effort|pi/context|pi/max_tokens|pi/fast)
                 result[$key]="$value"
                 ;;
             *)
@@ -1409,6 +1401,13 @@ _parse_model_profile_line() {
         "") ;;
         *[!0-9]*|0)
             warn "max_tokens='${result["max_tokens"]}' in ${harness} ${source} profile '${result[name]}' is not a positive integer."
+            return 1
+            ;;
+    esac
+    case "${result[fast]}" in
+        ""|true|false) ;;
+        *)
+            warn "fast='${result[fast]}' in ${harness} ${source} profile '${result[name]}' must be true or false."
             return 1
             ;;
     esac
@@ -1729,10 +1728,8 @@ configure_claude_settings() {
     "defaultMode": "bypassPermissions",
     "allow": [
       "Edit(${HOME}/.claude/**)",
-      "Write(${HOME}/.claude/**)",
       "Read(${HOME}/.claude/**)",
       "Edit(${HOME}/.claude.json)",
-      "Write(${HOME}/.claude.json)",
       "Read(${HOME}/.claude.json)"
     ],
     "deny": [
@@ -1997,6 +1994,30 @@ _toml_escape() {
     printf '%s' "$s"
 }
 
+_normalize_codex_service_tier() {
+    local service_tier="${1:-$DEFAULT_CODEX_SERVICE_TIER}"
+    case "$service_tier" in
+        priority|flex|default)
+            printf '%s' "$service_tier"
+            ;;
+        fast)
+            printf '%s' priority
+            ;;
+        *)
+            warn "AAB_CODEX_SERVICE_TIER='${service_tier}' is not one of priority, flex, default, or fast; defaulting to ${DEFAULT_CODEX_SERVICE_TIER}."
+            printf '%s' "$DEFAULT_CODEX_SERVICE_TIER"
+            ;;
+    esac
+}
+
+_codex_profile_service_tier() {
+    case "$1" in
+        true) printf '%s' priority ;;
+        false) printf '%s' default ;;
+        "") _normalize_codex_service_tier "${AAB_CODEX_SERVICE_TIER:-$DEFAULT_CODEX_SERVICE_TIER}" ;;
+    esac
+}
+
 configure_codex_config() {
     mkdir -p "${CODEX_DIR}"
     local preserved_plugin_config=""
@@ -2020,18 +2041,10 @@ configure_codex_config() {
 
     local model="${profile[model]}"
     local effort="${profile[effort]}"
-    local service_tier="${AAB_CODEX_SERVICE_TIER:-$DEFAULT_CODEX_SERVICE_TIER}"
+    local service_tier fast_mode=false
+    service_tier=$(_codex_profile_service_tier "${profile[fast]}")
+    [ "$service_tier" != priority ] || fast_mode=true
     local agent_max_threads="${AAB_CODEX_AGENT_MAX_THREADS:-$DEFAULT_CODEX_AGENT_MAX_THREADS}"
-    case "$service_tier" in
-        priority|flex|default) ;;
-        fast)
-            service_tier="priority"
-            ;;
-        *)
-            warn "AAB_CODEX_SERVICE_TIER='${service_tier}' is not one of priority, flex, default, or fast; defaulting to ${DEFAULT_CODEX_SERVICE_TIER}."
-            service_tier="$DEFAULT_CODEX_SERVICE_TIER"
-            ;;
-    esac
     local agent_max_threads_valid=1
     case "$agent_max_threads" in
         [1-9]*)
@@ -2077,6 +2090,9 @@ approval_policy = "never"
 sandbox_mode = "danger-full-access"
 web_search = "live"
 check_for_update_on_startup = false
+
+[features]
+fast_mode = ${fast_mode}
 
 [otel]
 environment = "dev"
@@ -2132,7 +2148,7 @@ ${preserved_plugin_config}
 TOML
     fi
 
-    log "Wrote ${CODEX_CONFIG} (profile=${profile[source]}/${profile[name]}, model=${model}, effort=${effort}, service_tier=${service_tier}, agent_max_threads=${agent_max_threads}, approval=never, sandbox=danger-full-access)."
+    log "Wrote ${CODEX_CONFIG} (profile=${profile[source]}/${profile[name]}, model=${model}, effort=${effort}, service_tier=${service_tier}, fast=${fast_mode}, agent_max_threads=${agent_max_threads}, approval=never, sandbox=danger-full-access)."
 }
 
 # ---------------------------------------------------------------------------
@@ -2187,6 +2203,7 @@ PI_OBSERVABILITY_ENV_CONTENT=$(cat <<'AAB_PI_OBSERVABILITY_ENV_EOF'
 
 export PI_TELEMETRY="${PI_TELEMETRY:-1}"
 export PI_TIMING="${PI_TIMING:-0}"
+export PI_PATTY_BG_TASKS_DISABLE_CTRL_B="${PI_PATTY_BG_TASKS_DISABLE_CTRL_B:-1}"
 export OPENAI_LOG="${OPENAI_LOG:-debug}"
 export ANTHROPIC_LOG="${ANTHROPIC_LOG:-debug}"
 
@@ -2742,6 +2759,31 @@ export default function listToolsExtension(pi: ExtensionAPI) {
 }
 AAB_PI_LIST_TOOLS_EXTENSION_EOF
 )
+PI_FAST_MODE_EXTENSION_CONTENT=$(cat <<'AAB_PI_FAST_MODE_EXTENSION_EOF'
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { clampThinkingLevel, streamOpenAIResponses } from "@earendil-works/pi-ai/compat";
+
+export default function fastMode(pi: ExtensionAPI) {
+	pi.registerProvider("aab-gateway-fast", {
+		api: "aab-openai-responses-fast",
+		streamSimple(model, context, options) {
+			const responseModel = { ...model, api: "openai-responses" as const };
+			const clampedReasoning = options?.reasoning
+				? clampThinkingLevel(responseModel, options.reasoning)
+				: undefined;
+			const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
+
+			return streamOpenAIResponses(responseModel, context, {
+				...options,
+				maxTokens: options?.maxTokens ?? model.maxTokens,
+				reasoningEffort,
+				serviceTier: "priority",
+			});
+		},
+	});
+}
+AAB_PI_FAST_MODE_EXTENSION_EOF
+)
 
 configure_pi_models() {
     local profiles line
@@ -2768,24 +2810,51 @@ configure_pi_models() {
     local -A profile=()
     while IFS= read -r line; do
         _parse_model_profile_line pi third-party "$line" profile
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "${profile[name]}" \
             "${profile[model]}" \
             "${profile[effort]}" \
             "${profile[thinking]}" \
             "${profile[context]}" \
-            "${profile["max_tokens"]}" >> "$records"
+            "${profile["max_tokens"]}" \
+            "${profile[fast]:-false}" >> "$records"
     done < <(_model_profile_lines "$profiles")
 
     python3 - "$records" "$AAB_INFERENCE_GATEWAY_URL" "$tmp" <<'PY'
 import csv
+from copy import deepcopy
 import json
 import sys
 
 records_path, base_url, output_path = sys.argv[1:]
 models = {}
+fast_models = {}
+
+
+def merge_model(catalog, candidate):
+    model_id = candidate["id"]
+    existing = catalog.get(model_id)
+    if existing is None:
+        catalog[model_id] = candidate
+        return
+    existing_map = existing.setdefault("thinkingLevelMap", {})
+    for level, provider_effort in candidate.get("thinkingLevelMap", {}).items():
+        previous = existing_map.get(level)
+        if previous is not None and previous != provider_effort:
+            raise SystemExit(
+                f"Conflicting Pi effort mappings for model {model_id!r}: "
+                f"{level} maps to both {previous!r} and {provider_effort!r}"
+            )
+        existing_map[level] = provider_effort
+    if not existing_map:
+        existing.pop("thinkingLevelMap", None)
+    existing["reasoning"] = existing["reasoning"] or candidate["reasoning"]
+    existing["contextWindow"] = max(existing["contextWindow"], candidate["contextWindow"])
+    existing["maxTokens"] = max(existing["maxTokens"], candidate["maxTokens"])
+
+
 with open(records_path, encoding="utf-8", newline="") as handle:
-    for name, model_id, effort, thinking, context, max_tokens in csv.reader(handle, delimiter="\t"):
+    for name, model_id, effort, thinking, context, max_tokens, fast in csv.reader(handle, delimiter="\t"):
         candidate = {
             "id": model_id,
             "name": name,
@@ -2797,24 +2866,9 @@ with open(records_path, encoding="utf-8", newline="") as handle:
         }
         if effort != thinking:
             candidate["thinkingLevelMap"] = {thinking: effort}
-        existing = models.get(model_id)
-        if existing is None:
-            models[model_id] = candidate
-            continue
-        existing_map = existing.setdefault("thinkingLevelMap", {})
-        for level, provider_effort in candidate.get("thinkingLevelMap", {}).items():
-            previous = existing_map.get(level)
-            if previous is not None and previous != provider_effort:
-                raise SystemExit(
-                    f"Conflicting Pi effort mappings for model {model_id!r}: "
-                    f"{level} maps to both {previous!r} and {provider_effort!r}"
-                )
-            existing_map[level] = provider_effort
-        if not existing_map:
-            existing.pop("thinkingLevelMap", None)
-        existing["reasoning"] = existing["reasoning"] or candidate["reasoning"]
-        existing["contextWindow"] = max(existing["contextWindow"], candidate["contextWindow"])
-        existing["maxTokens"] = max(existing["maxTokens"], candidate["maxTokens"])
+        merge_model(models, deepcopy(candidate))
+        if fast == "true":
+            merge_model(fast_models, deepcopy(candidate))
 
 payload = {
     "providers": {
@@ -2827,6 +2881,14 @@ payload = {
         }
     }
 }
+if fast_models:
+    payload["providers"]["aab-gateway-fast"] = {
+        "name": "AAB Inference Gateway Fast",
+        "baseUrl": base_url,
+        "api": "aab-openai-responses-fast",
+        "apiKey": "$AAB_INFERENCE_GATEWAY_API_KEY",
+        "models": list(fast_models.values()),
+    }
 with open(output_path, "w", encoding="utf-8") as handle:
     json.dump(payload, handle, indent=2)
     handle.write("\n")
@@ -2847,12 +2909,16 @@ configure_pi_settings() {
     records=$(mktemp)
     while IFS= read -r line; do
         _parse_model_profile_line pi third-party "$line" profile
-        printf '%s\n' "${profile[model]}" >> "$records"
+        printf '%s\t%s\n' "${profile[model]}" "${profile[fast]:-false}" >> "$records"
     done < <(_model_profile_lines "$profiles")
 
     if [ -s "$records" ]; then
         resolve_model_profile pi selected
-        selected_provider="aab-gateway"
+        if [ "${selected[fast]}" = true ]; then
+            selected_provider="aab-gateway-fast"
+        else
+            selected_provider="aab-gateway"
+        fi
         selected_model="${selected[model]}"
     fi
 
@@ -2867,12 +2933,12 @@ configure_pi_settings() {
     local tmp
     tmp=$(mktemp "${PI_SETTINGS_FILE}.tmp.XXXXXX")
     python3 - "$PI_SETTINGS_FILE" "$records" "$PI_LIST_TOOLS_EXTENSION" \
-        "$selected_provider" "$selected_model" "$tmp" <<'PY'
+        "$PI_FAST_MODE_EXTENSION" "$selected_provider" "$selected_model" "$tmp" <<'PY'
 import json
 from pathlib import Path
 import sys
 
-settings_path, models_path, extension_path, provider, model, output_path = sys.argv[1:]
+settings_path, models_path, list_tools_extension, fast_mode_extension, provider, model, output_path = sys.argv[1:]
 data = {}
 try:
     with open(settings_path, encoding="utf-8") as handle:
@@ -2895,13 +2961,18 @@ data.update(
             "maxRetries": 15,
             "provider": {"timeoutMs": 240000, "maxRetries": 0},
         },
-        "extensions": [extension_path],
+        "extensions": [list_tools_extension, fast_mode_extension],
         "packages": [],
     }
 )
 
 if provider:
-    models = list(dict.fromkeys(Path(models_path).read_text().splitlines()))
+    models = list(
+        dict.fromkeys(
+            line.split("\t", 1)[0]
+            for line in Path(models_path).read_text().splitlines()
+        )
+    )
     data["defaultProvider"] = provider
     data["defaultModel"] = model
     data["enabledModels"] = models
@@ -2932,6 +3003,7 @@ configure_pi_observability() {
     _write_pi_embedded_asset "$PI_OBSERVABILITY_ENV_FILE" "$PI_OBSERVABILITY_ENV_CONTENT" 600
     _write_pi_embedded_asset "$PI_OBSERVABILITY_PRELOAD" "$PI_OBSERVABILITY_PRELOAD_CONTENT" 600
     _write_pi_embedded_asset "$PI_LIST_TOOLS_EXTENSION" "$PI_LIST_TOOLS_EXTENSION_CONTENT" 600
+    _write_pi_embedded_asset "$PI_FAST_MODE_EXTENSION" "$PI_FAST_MODE_EXTENSION_CONTENT" 600
 
     if ! command -v npm >/dev/null 2>&1; then
         warn "npm is unavailable; Pi OpenTelemetry dependencies were not installed."
@@ -3087,13 +3159,35 @@ configure_auth_ssh_key() {
     log "Wrote GitHub auth SSH key at $AUTH_KEY (pub $AUTH_KEY_PUB); wired github.com identity in $SSH_CONFIG."
 }
 
+_write_git_allowed_signers() {
+    local principal="$1" key_type key_data tmp
+    if [[ "$principal" == *[[:space:]]* ]]; then
+        warn "git user.email contains whitespace; cannot write the SSH allowed signers file."
+        return 1
+    fi
+    read -r key_type key_data _ < "$SIGNING_KEY_PUB"
+    if [ -z "$key_type" ] || [ -z "$key_data" ]; then
+        warn "Signing public key at ${SIGNING_KEY_PUB} is malformed; cannot write the SSH allowed signers file."
+        return 1
+    fi
+
+    mkdir -p "$AAB_DIR"
+    chmod 0700 "$AAB_DIR"
+    tmp=$(mktemp "${GIT_ALLOWED_SIGNERS_FILE}.tmp.XXXXXX")
+    printf '%s %s %s\n' "$principal" "$key_type" "$key_data" > "$tmp"
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$GIT_ALLOWED_SIGNERS_FILE"
+}
+
 # configure_signing_ssh_key: Decode $AAB_GIT_SSH_SIGNING_PRIVATE_KEY_B64 to
-# ~/.ssh/id_aab_signing and configure git to sign commits/tags with it.
+# ~/.ssh/id_aab_signing and configure git to sign and locally verify commits
+# and tags with it.
 # Does NOT touch ~/.ssh/config — this key is for signing only. Silent
 # no-op when the env var is unset.
 configure_signing_ssh_key() {
     local encoded="${AAB_GIT_SSH_SIGNING_PRIVATE_KEY_B64:-}"
     local label="AAB_GIT_SSH_SIGNING_PRIVATE_KEY_B64"
+    local signing_principal
     [ -z "$encoded" ] && return
 
     if ! command -v base64 >/dev/null 2>&1; then
@@ -3108,6 +3202,13 @@ configure_signing_ssh_key() {
         git config --global user.signingkey "$SIGNING_KEY_PUB"
         git config --global commit.gpgsign true
         git config --global tag.gpgsign true
+        signing_principal=$(git config --global --get user.email 2>/dev/null || true)
+        if [ -z "$signing_principal" ]; then
+            warn "git user.email is unset; cannot configure local SSH signature verification."
+        elif _write_git_allowed_signers "$signing_principal"; then
+            git config --global gpg.ssh.allowedSignersFile "$GIT_ALLOWED_SIGNERS_FILE"
+            log "Configured local SSH signature verification with $GIT_ALLOWED_SIGNERS_FILE."
+        fi
         log "Configured git to sign commits and tags with $SIGNING_KEY_PUB."
     else
         warn "git not installed; skipping SSH signing config."
@@ -3658,8 +3759,109 @@ configure_claude_launchers() {
     log "Wrote Claude profile launchers (selected=${selected[source]}/${selected[name]})."
 }
 
+_write_codex_gateway_model_catalog() {
+    local profiles line records tmp
+    local -A profile=()
+    profiles=$(_profile_list_for codex third-party)
+    if [ -z "$(_model_profile_lines "$profiles")" ]; then
+        rm -f "$CODEX_GATEWAY_MODEL_CATALOG"
+        return
+    fi
+
+    mkdir -p "$AAB_DIR"
+    records=$(mktemp)
+    tmp=$(mktemp "${CODEX_GATEWAY_MODEL_CATALOG}.tmp.XXXXXX")
+    while IFS= read -r line; do
+        _parse_model_profile_line codex third-party "$line" profile
+        printf '%s\t%s\t%s\n' \
+            "${profile[name]}" \
+            "${profile[model]}" \
+            "$(_codex_profile_service_tier "${profile[fast]}")" >> "$records"
+    done < <(_model_profile_lines "$profiles")
+
+    python3 - "$records" "$tmp" <<'PY'
+import csv
+import json
+import sys
+
+records_path, output_path = sys.argv[1:]
+models = {}
+with open(records_path, encoding="utf-8", newline="") as handle:
+    for name, model_id, service_tier in csv.reader(handle, delimiter="\t"):
+        model = models.setdefault(
+            model_id,
+            {
+                "name": name,
+                "service_tiers": [],
+            },
+        )
+        if service_tier != "default" and service_tier not in model["service_tiers"]:
+            model["service_tiers"].append(service_tier)
+
+tier_details = {
+    "priority": {
+        "id": "priority",
+        "name": "Fast",
+        "description": "Priority processing",
+    },
+    "flex": {
+        "id": "flex",
+        "name": "Flex",
+        "description": "Flexible processing",
+    },
+}
+payload = {"models": []}
+for model_id, model in models.items():
+    service_tiers = [tier_details[tier] for tier in model["service_tiers"]]
+    payload["models"].append(
+        {
+            "slug": model_id,
+            "display_name": model["name"],
+            "description": None,
+            "default_reasoning_level": None,
+            "supported_reasoning_levels": [],
+            "shell_type": "default",
+            "visibility": "none",
+            "supported_in_api": True,
+            "priority": 99,
+            "additional_speed_tiers": ["fast"] if "priority" in model["service_tiers"] else [],
+            "service_tiers": service_tiers,
+            "default_service_tier": None,
+            "availability_nux": None,
+            "upgrade": None,
+            "base_instructions": "",
+            "model_messages": None,
+            "include_skills_usage_instructions": False,
+            "supports_reasoning_summaries": False,
+            "default_reasoning_summary": "auto",
+            "support_verbosity": False,
+            "default_verbosity": None,
+            "apply_patch_tool_type": None,
+            "web_search_tool_type": "text",
+            "truncation_policy": {"mode": "bytes", "limit": 10000},
+            "supports_parallel_tool_calls": False,
+            "supports_image_detail_original": False,
+            "context_window": 272000,
+            "max_context_window": 272000,
+            "experimental_supported_tools": [],
+            "input_modalities": ["text", "image"],
+            "supports_search_tool": False,
+            "use_responses_lite": False,
+        }
+    )
+
+with open(output_path, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, indent=2)
+    handle.write("\n")
+PY
+    rm -f "$records"
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$CODEX_GATEWAY_MODEL_CATALOG"
+}
+
 _write_codex_launcher() {
-    local source="$1" name="$2" model="$3" effort="$4" launcher="$5" tmp
+    local source="$1" name="$2" model="$3" effort="$4" service_tier="$5"
+    local fast_mode="$6" model_catalog="$7" launcher="$8" tmp
     tmp=$(mktemp "${launcher}.tmp.XXXXXX")
     {
         printf '%s\n' '#!/usr/bin/env bash'
@@ -3668,6 +3870,9 @@ _write_codex_launcher() {
         printf 'profile_name=%q\n' "$name"
         printf 'profile_model=%q\n' "$model"
         printf 'profile_effort=%q\n' "$effort"
+        printf 'profile_service_tier=%q\n' "$service_tier"
+        printf 'profile_fast_mode=%q\n' "$fast_mode"
+        printf 'profile_model_catalog=%q\n' "$model_catalog"
         cat <<'BASH'
 set -euo pipefail
 
@@ -3706,7 +3911,17 @@ canonical_dir() {
 
 model_escaped=$(toml_escape "$profile_model")
 effort_escaped=$(toml_escape "$profile_effort")
-config_args=(-c "model=\"${model_escaped}\"" -c "model_reasoning_effort=\"${effort_escaped}\"")
+service_tier_escaped=$(toml_escape "$profile_service_tier")
+config_args=(
+    -c "model=\"${model_escaped}\""
+    -c "model_reasoning_effort=\"${effort_escaped}\""
+    -c "service_tier=\"${service_tier_escaped}\""
+    -c "features.fast_mode=${profile_fast_mode}"
+)
+if [ -n "$profile_model_catalog" ]; then
+    model_catalog_escaped=$(toml_escape "$profile_model_catalog")
+    config_args+=(-c "model_catalog_json=\"${model_catalog_escaped}\"")
+fi
 unset OPENAI_API_KEY
 case "$profile_source" in
     first-party)
@@ -3772,7 +3987,7 @@ BASH
 configure_codex_launchers() {
     local codex_bin="${HOME}/.local/bin/codex"
     local real_bin="${HOME}/.local/bin/codex-aab-real"
-    local source profiles line launcher
+    local source profiles line launcher service_tier fast_mode model_catalog
     local -A profile=() selected=()
 
     _prepare_launcher_real_binary "codex" "$codex_bin" "$real_bin" "Autonomous-agent-bootstrap Codex launcher"
@@ -3780,6 +3995,7 @@ configure_codex_launchers() {
         'Autonomous-agent-bootstrap Codex launcher' \
         "${HOME}/.local/bin/codex-first-party*" \
         "${HOME}/.local/bin/codex-third-party-*"
+    _write_codex_gateway_model_catalog
 
     for source in first-party third-party; do
         profiles=$(_profile_list_for codex "$source")
@@ -3788,8 +4004,17 @@ configure_codex_launchers() {
             if [ "$source" = "third-party" ]; then
                 require_inference_gateway "Codex profile '${profile[name]}'"
             fi
+            service_tier=$(_codex_profile_service_tier "${profile[fast]}")
+            fast_mode=false
+            [ "$service_tier" != priority ] || fast_mode=true
+            model_catalog=""
+            if [ "$source" = "third-party" ] && [ "$service_tier" != default ]; then
+                model_catalog="$CODEX_GATEWAY_MODEL_CATALOG"
+            fi
             launcher="${HOME}/.local/bin/codex-${source}-${profile[name]}"
-            _write_codex_launcher "$source" "${profile[name]}" "${profile[model]}" "${profile[effort]}" "$launcher"
+            _write_codex_launcher \
+                "$source" "${profile[name]}" "${profile[model]}" "${profile[effort]}" \
+                "$service_tier" "$fast_mode" "$model_catalog" "$launcher"
         done < <(_model_profile_lines "$profiles")
     done
 
@@ -3800,12 +4025,13 @@ configure_codex_launchers() {
 }
 
 _write_pi_launcher() {
-    local name="$1" model="$2" thinking="$3" launcher="$4" tmp
+    local name="$1" provider="$2" model="$3" thinking="$4" launcher="$5" tmp
     tmp=$(mktemp "${launcher}.tmp.XXXXXX")
     {
         printf '%s\n' '#!/usr/bin/env bash'
         printf '%s\n' '# Autonomous-agent-bootstrap Pi launcher.'
         printf 'profile_name=%q\n' "$name"
+        printf 'profile_provider=%q\n' "$provider"
         printf 'profile_model=%q\n' "$model"
         printf 'profile_thinking=%q\n' "$thinking"
         cat <<'BASH'
@@ -3855,7 +4081,7 @@ done
 
 extra_args=()
 if [ -n "$profile_name" ]; then
-    [ "$has_provider" -eq 1 ] || extra_args+=(--provider aab-gateway)
+    [ "$has_provider" -eq 1 ] || extra_args+=(--provider "$profile_provider")
     [ "$has_model" -eq 1 ] || extra_args+=(--model "$profile_model")
     [ "$has_thinking" -eq 1 ] || extra_args+=(--thinking "$profile_thinking")
 fi
@@ -3869,7 +4095,7 @@ BASH
 configure_pi_launchers() {
     local pi_bin="${HOME}/.local/bin/pi"
     local real_bin="${HOME}/.local/bin/pi-aab-real"
-    local profiles line launcher
+    local profiles line launcher provider
     local -A profile=() selected=()
 
     if [ ! -x "$real_bin" ]; then
@@ -3883,7 +4109,7 @@ configure_pi_launchers() {
         "${HOME}/.local/bin/pi-*"
 
     if [ -z "$(_model_profile_lines "$profiles")" ]; then
-        _write_pi_launcher "" "" "" "$pi_bin"
+        _write_pi_launcher "" "" "" "" "$pi_bin"
         log "Wrote unconfigured Pi launcher with observability at ${pi_bin}."
         return
     fi
@@ -3891,12 +4117,22 @@ configure_pi_launchers() {
     require_inference_gateway "Pi profiles"
     while IFS= read -r line; do
         _parse_model_profile_line pi third-party "$line" profile
+        if [ "${profile[fast]}" = true ]; then
+            provider="aab-gateway-fast"
+        else
+            provider="aab-gateway"
+        fi
         launcher="${HOME}/.local/bin/pi-${profile[name]}"
-        _write_pi_launcher "${profile[name]}" "${profile[model]}" "${profile[thinking]}" "$launcher"
+        _write_pi_launcher "${profile[name]}" "$provider" "${profile[model]}" "${profile[thinking]}" "$launcher"
     done < <(_model_profile_lines "$profiles")
 
     resolve_model_profile pi selected
-    _write_pi_launcher "${selected[name]}" "${selected[model]}" "${selected[thinking]}" "$pi_bin"
+    if [ "${selected[fast]}" = true ]; then
+        provider="aab-gateway-fast"
+    else
+        provider="aab-gateway"
+    fi
+    _write_pi_launcher "${selected[name]}" "$provider" "${selected[model]}" "${selected[thinking]}" "$pi_bin"
     log "Wrote Pi profile launchers (selected=${selected[name]})."
 }
 # <<< src/bootstrap/26_configure_launchers.bash <<<
@@ -3930,9 +4166,8 @@ configure_bashrc() {
             '# ensures the AAB launcher dir (~/.local/aab-bin) is ahead of' \
             '# ~/.local/bin on PATH, so the native auto-updater that owns' \
             '# ~/.local/bin/claude cannot shadow the AAB provider wrapper.' \
-            '# ~/.local/bin also carries the uv tool symlinks (ruff,' \
-            '# pre-commit, autocuda), so a bare `ruff` / `pre-commit` resolves' \
-            '# there ahead of the system dirs.' \
+            '# ~/.local/bin also carries uv tool symlinks, which resolve there' \
+            '# ahead of the system dirs.' \
             'if [ -f "$HOME/.local/bin/env" ]; then' \
             '    . "$HOME/.local/bin/env"' \
             'fi' \
@@ -3998,9 +4233,8 @@ configure_profile() {
             '# Keep the AAB launcher dir ahead of ~/.local/bin for login shells,' \
             '# whose ~/.profile re-prepends ~/.local/bin after sourcing ~/.bashrc.' \
             '# The aab-bin prepend must be the last PATH mutation in the' \
-            '# login-shell sequence; ~/.local/bin (with the uv tool symlinks for' \
-            '# ruff / pre-commit / autocuda) stays ahead of the system dirs but' \
-            '# behind it.' \
+            '# login-shell sequence; ~/.local/bin and its uv tool symlinks stay' \
+            '# ahead of the system dirs but behind it.' \
             'export PATH="$HOME/.local/aab-bin:$PATH"'
         printf '%s\n' "${BASHRC_MARKER_END}"
     } >> "${PROFILE}"
