@@ -1,7 +1,7 @@
 # Generated autonomous-agent-bootstrap artifact
 
 Source branch: fix/codex-hook-trust-warning
-Source commit: 5f6e2efe5414d159e3a1c6952d2012d34b88bd74
+Source commit: 6067fa3b05a21db5be7b911ec83b53233b291d6c
 
 Curl this generated artifact with:
 
