@@ -1,7 +1,7 @@
 # Generated autonomous-agent-bootstrap artifact
 
 Source branch: fix/codex-gateway-model-metadata
-Source commit: 71b1871c6e011363da6abf3d51604f027859b23f
+Source commit: 49e46a9c4c613204d4a652493f3a5f2a38d31951
 
 Curl this generated artifact with:
 

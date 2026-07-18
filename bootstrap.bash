@@ -65,7 +65,7 @@ GITHUB_SHELL_CONFIG_FILE="${AAB_SHELL_CONFIG_DIR}/github.env"
 CODEX_DIR="${HOME}/.codex"
 CODEX_CONFIG="${CODEX_DIR}/config.toml"
 CODEX_MODEL_INSTRUCTIONS_FILE="${CODEX_DIR}/codex-instructions.md"
-CODEX_MODEL_CATALOG_FILE="${CODEX_DIR}/aab-model-catalog.json"
+CODEX_GATEWAY_MODEL_CATALOG="${AAB_DIR}/codex-gateway-model-catalog.json"
 PI_DIR="${HOME}/.pi/agent"
 PI_SETTINGS_FILE="${PI_DIR}/settings.json"
 PI_MODELS_FILE="${PI_DIR}/models.json"
@@ -74,6 +74,7 @@ PI_NPM_DIR="${PI_DIR}/npm"
 PI_OBSERVABILITY_ENV_FILE="${AAB_SHELL_CONFIG_DIR}/pi-observability.env"
 PI_OBSERVABILITY_PRELOAD="${PI_NPM_DIR}/pi-observability-preload.cjs"
 PI_LIST_TOOLS_EXTENSION="${PI_DIR}/extensions/list-tools.ts"
+PI_FAST_MODE_EXTENSION="${PI_DIR}/extensions/fast-mode.ts"
 NODE_INSTALL_DIR="${HOME}/.local/share/aab/node"
 BREV_DIR="${HOME}/.brev"
 BREV_ONBOARDING="${BREV_DIR}/onboarding_step.json"
@@ -89,6 +90,7 @@ AUTH_KEY="${SSH_DIR}/id_aab_auth"
 AUTH_KEY_PUB="${AUTH_KEY}.pub"
 SIGNING_KEY="${SSH_DIR}/id_aab_signing"
 SIGNING_KEY_PUB="${SIGNING_KEY}.pub"
+GIT_ALLOWED_SIGNERS_FILE="${AAB_DIR}/git-allowed-signers"
 SSH_MARKER_BEGIN="# >>> autonomous-agent-bootstrap >>>"
 SSH_MARKER_END="# <<< autonomous-agent-bootstrap <<<"
 GIT_HOOKS_DIR="${AAB_DIR}/git-hooks"
@@ -1161,7 +1163,7 @@ PI_PLUGINS_DEFAULT_CONTENT=$(cat <<'AAB_PI_PLUGINS_EOF'
 npm:pi-codex-goal@0.1.37
 git:github.com/robobryce/pi-schedule-prompt@636ce73ece6ab77db023bf3613180290eb36db8f
 git:github.com/nicobailon/pi-subagents@ea9b72f2e5bc0e0cbaacdab589576e858b12c03f
-git:github.com/robobryce/pi-patty-bg-tasks@4598fe85060f81d646eb7e947d9684f4f1783a1e
+git:github.com/robobryce/pi-patty-bg-tasks@f48c6a124daa6283c7252e737d206157b1019868
 git:github.com/robobryce/pi-web-access@35f229561375d9223e0bc26fa6fa9c0df924d9c0
 git:github.com/robobryce/pi-retry-empty@c46c664bc46f86a8c8736fbbd6801daf25ebae86
 npm:pi-print-stream@0.1.0
@@ -1345,6 +1347,7 @@ _parse_model_profile_line() {
     result["max_tokens"]=""
     result[subagent]=""
     result[thinking]=""
+    result["fast"]=""
     case "$harness" in
         claude)
             result[effort]="$DEFAULT_CLAUDE_CODE_EFFORT"
@@ -1387,7 +1390,7 @@ _parse_model_profile_line() {
         seen_fields[$key]=1
 
         case "${harness}/${key}" in
-            claude/model|claude/effort|claude/context|claude/subagent|claude/haiku|claude/sonnet|claude/opus|codex/model|codex/effort|pi/model|pi/effort|pi/context|pi/max_tokens)
+            claude/model|claude/effort|claude/context|claude/subagent|claude/haiku|claude/sonnet|claude/opus|codex/model|codex/effort|codex/fast|pi/model|pi/effort|pi/context|pi/max_tokens|pi/fast)
                 result[$key]="$value"
                 ;;
             *)
@@ -1408,6 +1411,13 @@ _parse_model_profile_line() {
         "") ;;
         *[!0-9]*|0)
             warn "max_tokens='${result["max_tokens"]}' in ${harness} ${source} profile '${result[name]}' is not a positive integer."
+            return 1
+            ;;
+    esac
+    case "${result[fast]}" in
+        ""|true|false) ;;
+        *)
+            warn "fast='${result[fast]}' in ${harness} ${source} profile '${result[name]}' must be true or false."
             return 1
             ;;
     esac
@@ -1728,10 +1738,8 @@ configure_claude_settings() {
     "defaultMode": "bypassPermissions",
     "allow": [
       "Edit(${HOME}/.claude/**)",
-      "Write(${HOME}/.claude/**)",
       "Read(${HOME}/.claude/**)",
       "Edit(${HOME}/.claude.json)",
-      "Write(${HOME}/.claude.json)",
       "Read(${HOME}/.claude.json)"
     ],
     "deny": [
@@ -1996,100 +2004,28 @@ _toml_escape() {
     printf '%s' "$s"
 }
 
-_codex_binary() {
-    if [ -x "${HOME}/.local/bin/codex-aab-real" ]; then
-        printf '%s' "${HOME}/.local/bin/codex-aab-real"
-    elif [ -x "${HOME}/.local/bin/codex" ]; then
-        printf '%s' "${HOME}/.local/bin/codex"
-    elif command -v codex >/dev/null 2>&1; then
-        command -v codex
-    else
-        return 1
-    fi
+_normalize_codex_service_tier() {
+    local service_tier="${1:-$DEFAULT_CODEX_SERVICE_TIER}"
+    case "$service_tier" in
+        priority|flex|default)
+            printf '%s' "$service_tier"
+            ;;
+        fast)
+            printf '%s' priority
+            ;;
+        *)
+            warn "AAB_CODEX_SERVICE_TIER='${service_tier}' is not one of priority, flex, default, or fast; defaulting to ${DEFAULT_CODEX_SERVICE_TIER}."
+            printf '%s' "$DEFAULT_CODEX_SERVICE_TIER"
+            ;;
+    esac
 }
 
-# Copy Codex's bundled catalog and add gateway-qualified aliases for models
-# whose final path component exactly matches a bundled model slug.
-configure_codex_model_catalog() {
-    local codex_bin
-    if ! codex_bin=$(_codex_binary); then
-        warn "codex binary not on PATH; cannot configure gateway model metadata."
-        return
-    fi
-
-    local -a configured_models=()
-    local source profiles line
-    local -A profile=()
-    for source in first-party third-party; do
-        profiles=$(_profile_list_for codex "$source")
-        while IFS= read -r line; do
-            _parse_model_profile_line codex "$source" "$line" profile
-            configured_models+=("${profile[model]}")
-        done < <(_model_profile_lines "$profiles")
-    done
-
-    local tmpdir bundled_catalog generated_catalog alias_count
-    tmpdir=$(mktemp -d)
-    bundled_catalog="${tmpdir}/bundled.json"
-    generated_catalog="${tmpdir}/generated.json"
-    mkdir -p "${tmpdir}/home/.codex"
-
-    if ! HOME="${tmpdir}/home" CODEX_HOME="${tmpdir}/home/.codex" \
-        "$codex_bin" debug models --bundled > "$bundled_catalog" 2>/dev/null; then
-        rm -rf "$tmpdir"
-        warn "Could not read Codex's bundled model catalog; gateway model metadata was not refreshed."
-        return
-    fi
-
-    if ! alias_count=$(python3 - "$bundled_catalog" "$generated_catalog" "${configured_models[@]}" <<'PY'
-import copy
-import json
-import sys
-
-source_path, destination_path, *configured_models = sys.argv[1:]
-with open(source_path, encoding="utf-8") as source:
-    catalog = json.load(source)
-
-models = catalog.get("models")
-if not isinstance(models, list):
-    raise ValueError("Codex model catalog does not contain a models list")
-
-by_slug = {
-    model["slug"]: model
-    for model in models
-    if isinstance(model, dict) and isinstance(model.get("slug"), str)
-}
-alias_count = 0
-for configured_model in configured_models:
-    if configured_model in by_slug:
-        continue
-    bundled_slug = configured_model.rsplit("/", 1)[-1]
-    template = by_slug.get(bundled_slug)
-    if template is None or bundled_slug == configured_model:
-        continue
-    alias = copy.deepcopy(template)
-    alias["slug"] = configured_model
-    models.append(alias)
-    by_slug[configured_model] = alias
-    alias_count += 1
-
-with open(destination_path, "w", encoding="utf-8") as destination:
-    json.dump(catalog, destination, indent=2)
-    destination.write("\n")
-
-print(alias_count)
-PY
-    ); then
-        rm -rf "$tmpdir"
-        warn "Could not generate Codex gateway model metadata."
-        return
-    fi
-
-    mkdir -p "$CODEX_DIR"
-    chmod 0644 "$generated_catalog"
-    mv -f "$generated_catalog" "$CODEX_MODEL_CATALOG_FILE"
-    rm -rf "$tmpdir"
-    log "Wrote ${CODEX_MODEL_CATALOG_FILE} with ${alias_count} gateway model alias(es)."
+_codex_profile_service_tier() {
+    case "$1" in
+        true) printf '%s' priority ;;
+        false) printf '%s' default ;;
+        "") _normalize_codex_service_tier "${AAB_CODEX_SERVICE_TIER:-$DEFAULT_CODEX_SERVICE_TIER}" ;;
+    esac
 }
 
 configure_codex_config() {
@@ -2115,18 +2051,10 @@ configure_codex_config() {
 
     local model="${profile[model]}"
     local effort="${profile[effort]}"
-    local service_tier="${AAB_CODEX_SERVICE_TIER:-$DEFAULT_CODEX_SERVICE_TIER}"
+    local service_tier fast_mode=false
+    service_tier=$(_codex_profile_service_tier "${profile[fast]}")
+    [ "$service_tier" != priority ] || fast_mode=true
     local agent_max_threads="${AAB_CODEX_AGENT_MAX_THREADS:-$DEFAULT_CODEX_AGENT_MAX_THREADS}"
-    case "$service_tier" in
-        priority|flex|default) ;;
-        fast)
-            service_tier="priority"
-            ;;
-        *)
-            warn "AAB_CODEX_SERVICE_TIER='${service_tier}' is not one of priority, flex, default, or fast; defaulting to ${DEFAULT_CODEX_SERVICE_TIER}."
-            service_tier="$DEFAULT_CODEX_SERVICE_TIER"
-            ;;
-    esac
     local agent_max_threads_valid=1
     case "$agent_max_threads" in
         [1-9]*)
@@ -2141,12 +2069,11 @@ configure_codex_config() {
         agent_max_threads="$DEFAULT_CODEX_AGENT_MAX_THREADS"
     fi
 
-    local model_escaped effort_escaped model_instructions_file_escaped model_catalog_file_escaped
+    local model_escaped effort_escaped model_instructions_file_escaped
     local home_escaped cwd cwd_escaped gateway_url_escaped
     model_escaped=$(_toml_escape "$model")
     effort_escaped=$(_toml_escape "$effort")
     model_instructions_file_escaped=$(_toml_escape "$CODEX_MODEL_INSTRUCTIONS_FILE")
-    model_catalog_file_escaped=$(_toml_escape "$CODEX_MODEL_CATALOG_FILE")
     home_escaped=$(_toml_escape "$HOME")
     cwd="${PWD:-$HOME}"
     cwd_escaped=$(_toml_escape "$cwd")
@@ -2156,10 +2083,6 @@ configure_codex_config() {
 model = "${model_escaped}"
 model_instructions_file = "${model_instructions_file_escaped}"
 TOML
-
-    if [ -f "$CODEX_MODEL_CATALOG_FILE" ]; then
-        printf 'model_catalog_json = "%s"\n' "$model_catalog_file_escaped" >> "$CODEX_CONFIG"
-    fi
 
     if [ "${profile[source]}" = "third-party" ]; then
         cat >> "${CODEX_CONFIG}" <<'TOML'
@@ -2177,6 +2100,9 @@ approval_policy = "never"
 sandbox_mode = "danger-full-access"
 web_search = "live"
 check_for_update_on_startup = false
+
+[features]
+fast_mode = ${fast_mode}
 
 [otel]
 environment = "dev"
@@ -2232,7 +2158,7 @@ ${preserved_plugin_config}
 TOML
     fi
 
-    log "Wrote ${CODEX_CONFIG} (profile=${profile[source]}/${profile[name]}, model=${model}, effort=${effort}, service_tier=${service_tier}, agent_max_threads=${agent_max_threads}, approval=never, sandbox=danger-full-access)."
+    log "Wrote ${CODEX_CONFIG} (profile=${profile[source]}/${profile[name]}, model=${model}, effort=${effort}, service_tier=${service_tier}, fast=${fast_mode}, agent_max_threads=${agent_max_threads}, approval=never, sandbox=danger-full-access)."
 }
 
 # ---------------------------------------------------------------------------
@@ -2248,8 +2174,14 @@ configure_codex_auth() {
     local api_key="${AAB_OPENAI_API_KEY:-}"
     [ -z "$api_key" ] && return
 
-    local codex_bin
-    if ! codex_bin=$(_codex_binary); then
+    local codex_bin=""
+    if [ -x "${HOME}/.local/bin/codex-aab-real" ]; then
+        codex_bin="${HOME}/.local/bin/codex-aab-real"
+    elif command -v codex >/dev/null 2>&1; then
+        codex_bin=$(command -v codex)
+    elif [ -x "${HOME}/.local/bin/codex" ]; then
+        codex_bin="${HOME}/.local/bin/codex"
+    else
         warn "codex binary not on PATH; cannot configure AAB_OPENAI_API_KEY auth."
         exit 1
     fi
@@ -2264,7 +2196,6 @@ configure_codex_auth() {
 
 configure_codex() {
     configure_codex_model_instructions
-    configure_codex_model_catalog
     configure_codex_config
     configure_codex_auth
 }
@@ -2282,6 +2213,7 @@ PI_OBSERVABILITY_ENV_CONTENT=$(cat <<'AAB_PI_OBSERVABILITY_ENV_EOF'
 
 export PI_TELEMETRY="${PI_TELEMETRY:-1}"
 export PI_TIMING="${PI_TIMING:-0}"
+export PI_PATTY_BG_TASKS_DISABLE_CTRL_B="${PI_PATTY_BG_TASKS_DISABLE_CTRL_B:-1}"
 export OPENAI_LOG="${OPENAI_LOG:-debug}"
 export ANTHROPIC_LOG="${ANTHROPIC_LOG:-debug}"
 
@@ -2837,6 +2769,31 @@ export default function listToolsExtension(pi: ExtensionAPI) {
 }
 AAB_PI_LIST_TOOLS_EXTENSION_EOF
 )
+PI_FAST_MODE_EXTENSION_CONTENT=$(cat <<'AAB_PI_FAST_MODE_EXTENSION_EOF'
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { clampThinkingLevel, streamOpenAIResponses } from "@earendil-works/pi-ai/compat";
+
+export default function fastMode(pi: ExtensionAPI) {
+	pi.registerProvider("aab-gateway-fast", {
+		api: "aab-openai-responses-fast",
+		streamSimple(model, context, options) {
+			const responseModel = { ...model, api: "openai-responses" as const };
+			const clampedReasoning = options?.reasoning
+				? clampThinkingLevel(responseModel, options.reasoning)
+				: undefined;
+			const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
+
+			return streamOpenAIResponses(responseModel, context, {
+				...options,
+				maxTokens: options?.maxTokens ?? model.maxTokens,
+				reasoningEffort,
+				serviceTier: "priority",
+			});
+		},
+	});
+}
+AAB_PI_FAST_MODE_EXTENSION_EOF
+)
 
 configure_pi_models() {
     local profiles line
@@ -2863,24 +2820,51 @@ configure_pi_models() {
     local -A profile=()
     while IFS= read -r line; do
         _parse_model_profile_line pi third-party "$line" profile
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "${profile[name]}" \
             "${profile[model]}" \
             "${profile[effort]}" \
             "${profile[thinking]}" \
             "${profile[context]}" \
-            "${profile["max_tokens"]}" >> "$records"
+            "${profile["max_tokens"]}" \
+            "${profile[fast]:-false}" >> "$records"
     done < <(_model_profile_lines "$profiles")
 
     python3 - "$records" "$AAB_INFERENCE_GATEWAY_URL" "$tmp" <<'PY'
 import csv
+from copy import deepcopy
 import json
 import sys
 
 records_path, base_url, output_path = sys.argv[1:]
 models = {}
+fast_models = {}
+
+
+def merge_model(catalog, candidate):
+    model_id = candidate["id"]
+    existing = catalog.get(model_id)
+    if existing is None:
+        catalog[model_id] = candidate
+        return
+    existing_map = existing.setdefault("thinkingLevelMap", {})
+    for level, provider_effort in candidate.get("thinkingLevelMap", {}).items():
+        previous = existing_map.get(level)
+        if previous is not None and previous != provider_effort:
+            raise SystemExit(
+                f"Conflicting Pi effort mappings for model {model_id!r}: "
+                f"{level} maps to both {previous!r} and {provider_effort!r}"
+            )
+        existing_map[level] = provider_effort
+    if not existing_map:
+        existing.pop("thinkingLevelMap", None)
+    existing["reasoning"] = existing["reasoning"] or candidate["reasoning"]
+    existing["contextWindow"] = max(existing["contextWindow"], candidate["contextWindow"])
+    existing["maxTokens"] = max(existing["maxTokens"], candidate["maxTokens"])
+
+
 with open(records_path, encoding="utf-8", newline="") as handle:
-    for name, model_id, effort, thinking, context, max_tokens in csv.reader(handle, delimiter="\t"):
+    for name, model_id, effort, thinking, context, max_tokens, fast in csv.reader(handle, delimiter="\t"):
         candidate = {
             "id": model_id,
             "name": name,
@@ -2892,24 +2876,9 @@ with open(records_path, encoding="utf-8", newline="") as handle:
         }
         if effort != thinking:
             candidate["thinkingLevelMap"] = {thinking: effort}
-        existing = models.get(model_id)
-        if existing is None:
-            models[model_id] = candidate
-            continue
-        existing_map = existing.setdefault("thinkingLevelMap", {})
-        for level, provider_effort in candidate.get("thinkingLevelMap", {}).items():
-            previous = existing_map.get(level)
-            if previous is not None and previous != provider_effort:
-                raise SystemExit(
-                    f"Conflicting Pi effort mappings for model {model_id!r}: "
-                    f"{level} maps to both {previous!r} and {provider_effort!r}"
-                )
-            existing_map[level] = provider_effort
-        if not existing_map:
-            existing.pop("thinkingLevelMap", None)
-        existing["reasoning"] = existing["reasoning"] or candidate["reasoning"]
-        existing["contextWindow"] = max(existing["contextWindow"], candidate["contextWindow"])
-        existing["maxTokens"] = max(existing["maxTokens"], candidate["maxTokens"])
+        merge_model(models, deepcopy(candidate))
+        if fast == "true":
+            merge_model(fast_models, deepcopy(candidate))
 
 payload = {
     "providers": {
@@ -2922,6 +2891,14 @@ payload = {
         }
     }
 }
+if fast_models:
+    payload["providers"]["aab-gateway-fast"] = {
+        "name": "AAB Inference Gateway Fast",
+        "baseUrl": base_url,
+        "api": "aab-openai-responses-fast",
+        "apiKey": "$AAB_INFERENCE_GATEWAY_API_KEY",
+        "models": list(fast_models.values()),
+    }
 with open(output_path, "w", encoding="utf-8") as handle:
     json.dump(payload, handle, indent=2)
     handle.write("\n")
@@ -2942,12 +2919,16 @@ configure_pi_settings() {
     records=$(mktemp)
     while IFS= read -r line; do
         _parse_model_profile_line pi third-party "$line" profile
-        printf '%s\n' "${profile[model]}" >> "$records"
+        printf '%s\t%s\n' "${profile[model]}" "${profile[fast]:-false}" >> "$records"
     done < <(_model_profile_lines "$profiles")
 
     if [ -s "$records" ]; then
         resolve_model_profile pi selected
-        selected_provider="aab-gateway"
+        if [ "${selected[fast]}" = true ]; then
+            selected_provider="aab-gateway-fast"
+        else
+            selected_provider="aab-gateway"
+        fi
         selected_model="${selected[model]}"
     fi
 
@@ -2962,12 +2943,12 @@ configure_pi_settings() {
     local tmp
     tmp=$(mktemp "${PI_SETTINGS_FILE}.tmp.XXXXXX")
     python3 - "$PI_SETTINGS_FILE" "$records" "$PI_LIST_TOOLS_EXTENSION" \
-        "$selected_provider" "$selected_model" "$tmp" <<'PY'
+        "$PI_FAST_MODE_EXTENSION" "$selected_provider" "$selected_model" "$tmp" <<'PY'
 import json
 from pathlib import Path
 import sys
 
-settings_path, models_path, extension_path, provider, model, output_path = sys.argv[1:]
+settings_path, models_path, list_tools_extension, fast_mode_extension, provider, model, output_path = sys.argv[1:]
 data = {}
 try:
     with open(settings_path, encoding="utf-8") as handle:
@@ -2990,13 +2971,18 @@ data.update(
             "maxRetries": 15,
             "provider": {"timeoutMs": 240000, "maxRetries": 0},
         },
-        "extensions": [extension_path],
+        "extensions": [list_tools_extension, fast_mode_extension],
         "packages": [],
     }
 )
 
 if provider:
-    models = list(dict.fromkeys(Path(models_path).read_text().splitlines()))
+    models = list(
+        dict.fromkeys(
+            line.split("\t", 1)[0]
+            for line in Path(models_path).read_text().splitlines()
+        )
+    )
     data["defaultProvider"] = provider
     data["defaultModel"] = model
     data["enabledModels"] = models
@@ -3027,6 +3013,7 @@ configure_pi_observability() {
     _write_pi_embedded_asset "$PI_OBSERVABILITY_ENV_FILE" "$PI_OBSERVABILITY_ENV_CONTENT" 600
     _write_pi_embedded_asset "$PI_OBSERVABILITY_PRELOAD" "$PI_OBSERVABILITY_PRELOAD_CONTENT" 600
     _write_pi_embedded_asset "$PI_LIST_TOOLS_EXTENSION" "$PI_LIST_TOOLS_EXTENSION_CONTENT" 600
+    _write_pi_embedded_asset "$PI_FAST_MODE_EXTENSION" "$PI_FAST_MODE_EXTENSION_CONTENT" 600
 
     if ! command -v npm >/dev/null 2>&1; then
         warn "npm is unavailable; Pi OpenTelemetry dependencies were not installed."
@@ -3182,13 +3169,35 @@ configure_auth_ssh_key() {
     log "Wrote GitHub auth SSH key at $AUTH_KEY (pub $AUTH_KEY_PUB); wired github.com identity in $SSH_CONFIG."
 }
 
+_write_git_allowed_signers() {
+    local principal="$1" key_type key_data tmp
+    if [[ "$principal" == *[[:space:]]* ]]; then
+        warn "git user.email contains whitespace; cannot write the SSH allowed signers file."
+        return 1
+    fi
+    read -r key_type key_data _ < "$SIGNING_KEY_PUB"
+    if [ -z "$key_type" ] || [ -z "$key_data" ]; then
+        warn "Signing public key at ${SIGNING_KEY_PUB} is malformed; cannot write the SSH allowed signers file."
+        return 1
+    fi
+
+    mkdir -p "$AAB_DIR"
+    chmod 0700 "$AAB_DIR"
+    tmp=$(mktemp "${GIT_ALLOWED_SIGNERS_FILE}.tmp.XXXXXX")
+    printf '%s %s %s\n' "$principal" "$key_type" "$key_data" > "$tmp"
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$GIT_ALLOWED_SIGNERS_FILE"
+}
+
 # configure_signing_ssh_key: Decode $AAB_GIT_SSH_SIGNING_PRIVATE_KEY_B64 to
-# ~/.ssh/id_aab_signing and configure git to sign commits/tags with it.
+# ~/.ssh/id_aab_signing and configure git to sign and locally verify commits
+# and tags with it.
 # Does NOT touch ~/.ssh/config — this key is for signing only. Silent
 # no-op when the env var is unset.
 configure_signing_ssh_key() {
     local encoded="${AAB_GIT_SSH_SIGNING_PRIVATE_KEY_B64:-}"
     local label="AAB_GIT_SSH_SIGNING_PRIVATE_KEY_B64"
+    local signing_principal
     [ -z "$encoded" ] && return
 
     if ! command -v base64 >/dev/null 2>&1; then
@@ -3203,6 +3212,13 @@ configure_signing_ssh_key() {
         git config --global user.signingkey "$SIGNING_KEY_PUB"
         git config --global commit.gpgsign true
         git config --global tag.gpgsign true
+        signing_principal=$(git config --global --get user.email 2>/dev/null || true)
+        if [ -z "$signing_principal" ]; then
+            warn "git user.email is unset; cannot configure local SSH signature verification."
+        elif _write_git_allowed_signers "$signing_principal"; then
+            git config --global gpg.ssh.allowedSignersFile "$GIT_ALLOWED_SIGNERS_FILE"
+            log "Configured local SSH signature verification with $GIT_ALLOWED_SIGNERS_FILE."
+        fi
         log "Configured git to sign commits and tags with $SIGNING_KEY_PUB."
     else
         warn "git not installed; skipping SSH signing config."
@@ -3753,8 +3769,91 @@ configure_claude_launchers() {
     log "Wrote Claude profile launchers (selected=${selected[source]}/${selected[name]})."
 }
 
+_write_codex_gateway_model_catalog() {
+    local codex_bin="$1"
+    local profiles line records bundled_catalog tmp_home tmp alias_count
+    local -A profile=()
+    profiles=$(_profile_list_for codex third-party)
+    if [ -z "$(_model_profile_lines "$profiles")" ]; then
+        rm -f "$CODEX_GATEWAY_MODEL_CATALOG"
+        return
+    fi
+
+    mkdir -p "$AAB_DIR"
+    records=$(mktemp)
+    bundled_catalog=$(mktemp)
+    tmp_home=$(mktemp -d)
+    tmp=$(mktemp "${CODEX_GATEWAY_MODEL_CATALOG}.tmp.XXXXXX")
+    while IFS= read -r line; do
+        _parse_model_profile_line codex third-party "$line" profile
+        printf '%s\n' "${profile[model]}" >> "$records"
+    done < <(_model_profile_lines "$profiles")
+
+    mkdir -p "${tmp_home}/.codex"
+    if ! HOME="$tmp_home" CODEX_HOME="${tmp_home}/.codex" \
+        "$codex_bin" debug models --bundled > "$bundled_catalog" 2>/dev/null; then
+        rm -f "$records" "$bundled_catalog" "$tmp"
+        rm -r "$tmp_home"
+        warn "Could not read Codex's bundled model catalog; gateway model metadata was not refreshed."
+        return
+    fi
+
+    if ! alias_count=$(python3 - "$records" "$bundled_catalog" "$tmp" <<'PY'
+import copy
+import json
+import sys
+
+records_path, source_path, output_path = sys.argv[1:]
+with open(source_path, encoding="utf-8") as source:
+    catalog = json.load(source)
+
+models = catalog.get("models")
+if not isinstance(models, list):
+    raise ValueError("Codex model catalog does not contain a models list")
+
+by_slug = {
+    model["slug"]: model
+    for model in models
+    if isinstance(model, dict) and isinstance(model.get("slug"), str)
+}
+alias_count = 0
+with open(records_path, encoding="utf-8") as records:
+    for configured_model in dict.fromkeys(records.read().splitlines()):
+        if configured_model in by_slug:
+            continue
+        bundled_slug = configured_model.rsplit("/", 1)[-1]
+        template = by_slug.get(bundled_slug)
+        if template is None:
+            continue
+        alias = copy.deepcopy(template)
+        alias["slug"] = configured_model
+        models.append(alias)
+        by_slug[configured_model] = alias
+        alias_count += 1
+
+with open(output_path, "w", encoding="utf-8") as handle:
+    json.dump(catalog, handle, indent=2)
+    handle.write("\n")
+
+print(alias_count)
+PY
+    ); then
+        rm -f "$records" "$bundled_catalog" "$tmp"
+        rm -r "$tmp_home"
+        warn "Could not generate Codex gateway model metadata."
+        return
+    fi
+    rm -f "$records"
+    rm -f "$bundled_catalog"
+    rm -r "$tmp_home"
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$CODEX_GATEWAY_MODEL_CATALOG"
+    log "Wrote ${CODEX_GATEWAY_MODEL_CATALOG} with ${alias_count} gateway model alias(es)."
+}
+
 _write_codex_launcher() {
-    local source="$1" name="$2" model="$3" effort="$4" launcher="$5" tmp
+    local source="$1" name="$2" model="$3" effort="$4" service_tier="$5"
+    local fast_mode="$6" model_catalog="$7" launcher="$8" tmp
     tmp=$(mktemp "${launcher}.tmp.XXXXXX")
     {
         printf '%s\n' '#!/usr/bin/env bash'
@@ -3763,6 +3862,9 @@ _write_codex_launcher() {
         printf 'profile_name=%q\n' "$name"
         printf 'profile_model=%q\n' "$model"
         printf 'profile_effort=%q\n' "$effort"
+        printf 'profile_service_tier=%q\n' "$service_tier"
+        printf 'profile_fast_mode=%q\n' "$fast_mode"
+        printf 'profile_model_catalog=%q\n' "$model_catalog"
         cat <<'BASH'
 set -euo pipefail
 
@@ -3801,7 +3903,17 @@ canonical_dir() {
 
 model_escaped=$(toml_escape "$profile_model")
 effort_escaped=$(toml_escape "$profile_effort")
-config_args=(-c "model=\"${model_escaped}\"" -c "model_reasoning_effort=\"${effort_escaped}\"")
+service_tier_escaped=$(toml_escape "$profile_service_tier")
+config_args=(
+    -c "model=\"${model_escaped}\""
+    -c "model_reasoning_effort=\"${effort_escaped}\""
+    -c "service_tier=\"${service_tier_escaped}\""
+    -c "features.fast_mode=${profile_fast_mode}"
+)
+if [ -n "$profile_model_catalog" ]; then
+    model_catalog_escaped=$(toml_escape "$profile_model_catalog")
+    config_args+=(-c "model_catalog_json=\"${model_catalog_escaped}\"")
+fi
 unset OPENAI_API_KEY
 case "$profile_source" in
     first-party)
@@ -3867,7 +3979,7 @@ BASH
 configure_codex_launchers() {
     local codex_bin="${HOME}/.local/bin/codex"
     local real_bin="${HOME}/.local/bin/codex-aab-real"
-    local source profiles line launcher
+    local source profiles line launcher service_tier fast_mode model_catalog
     local -A profile=() selected=()
 
     _prepare_launcher_real_binary "codex" "$codex_bin" "$real_bin" "Autonomous-agent-bootstrap Codex launcher"
@@ -3875,6 +3987,7 @@ configure_codex_launchers() {
         'Autonomous-agent-bootstrap Codex launcher' \
         "${HOME}/.local/bin/codex-first-party*" \
         "${HOME}/.local/bin/codex-third-party-*"
+    _write_codex_gateway_model_catalog "$real_bin"
 
     for source in first-party third-party; do
         profiles=$(_profile_list_for codex "$source")
@@ -3883,8 +3996,17 @@ configure_codex_launchers() {
             if [ "$source" = "third-party" ]; then
                 require_inference_gateway "Codex profile '${profile[name]}'"
             fi
+            service_tier=$(_codex_profile_service_tier "${profile[fast]}")
+            fast_mode=false
+            [ "$service_tier" != priority ] || fast_mode=true
+            model_catalog=""
+            if [ "$source" = "third-party" ]; then
+                model_catalog="$CODEX_GATEWAY_MODEL_CATALOG"
+            fi
             launcher="${HOME}/.local/bin/codex-${source}-${profile[name]}"
-            _write_codex_launcher "$source" "${profile[name]}" "${profile[model]}" "${profile[effort]}" "$launcher"
+            _write_codex_launcher \
+                "$source" "${profile[name]}" "${profile[model]}" "${profile[effort]}" \
+                "$service_tier" "$fast_mode" "$model_catalog" "$launcher"
         done < <(_model_profile_lines "$profiles")
     done
 
@@ -3895,12 +4017,13 @@ configure_codex_launchers() {
 }
 
 _write_pi_launcher() {
-    local name="$1" model="$2" thinking="$3" launcher="$4" tmp
+    local name="$1" provider="$2" model="$3" thinking="$4" launcher="$5" tmp
     tmp=$(mktemp "${launcher}.tmp.XXXXXX")
     {
         printf '%s\n' '#!/usr/bin/env bash'
         printf '%s\n' '# Autonomous-agent-bootstrap Pi launcher.'
         printf 'profile_name=%q\n' "$name"
+        printf 'profile_provider=%q\n' "$provider"
         printf 'profile_model=%q\n' "$model"
         printf 'profile_thinking=%q\n' "$thinking"
         cat <<'BASH'
@@ -3950,7 +4073,7 @@ done
 
 extra_args=()
 if [ -n "$profile_name" ]; then
-    [ "$has_provider" -eq 1 ] || extra_args+=(--provider aab-gateway)
+    [ "$has_provider" -eq 1 ] || extra_args+=(--provider "$profile_provider")
     [ "$has_model" -eq 1 ] || extra_args+=(--model "$profile_model")
     [ "$has_thinking" -eq 1 ] || extra_args+=(--thinking "$profile_thinking")
 fi
@@ -3964,7 +4087,7 @@ BASH
 configure_pi_launchers() {
     local pi_bin="${HOME}/.local/bin/pi"
     local real_bin="${HOME}/.local/bin/pi-aab-real"
-    local profiles line launcher
+    local profiles line launcher provider
     local -A profile=() selected=()
 
     if [ ! -x "$real_bin" ]; then
@@ -3978,7 +4101,7 @@ configure_pi_launchers() {
         "${HOME}/.local/bin/pi-*"
 
     if [ -z "$(_model_profile_lines "$profiles")" ]; then
-        _write_pi_launcher "" "" "" "$pi_bin"
+        _write_pi_launcher "" "" "" "" "$pi_bin"
         log "Wrote unconfigured Pi launcher with observability at ${pi_bin}."
         return
     fi
@@ -3986,12 +4109,22 @@ configure_pi_launchers() {
     require_inference_gateway "Pi profiles"
     while IFS= read -r line; do
         _parse_model_profile_line pi third-party "$line" profile
+        if [ "${profile[fast]}" = true ]; then
+            provider="aab-gateway-fast"
+        else
+            provider="aab-gateway"
+        fi
         launcher="${HOME}/.local/bin/pi-${profile[name]}"
-        _write_pi_launcher "${profile[name]}" "${profile[model]}" "${profile[thinking]}" "$launcher"
+        _write_pi_launcher "${profile[name]}" "$provider" "${profile[model]}" "${profile[thinking]}" "$launcher"
     done < <(_model_profile_lines "$profiles")
 
     resolve_model_profile pi selected
-    _write_pi_launcher "${selected[name]}" "${selected[model]}" "${selected[thinking]}" "$pi_bin"
+    if [ "${selected[fast]}" = true ]; then
+        provider="aab-gateway-fast"
+    else
+        provider="aab-gateway"
+    fi
+    _write_pi_launcher "${selected[name]}" "$provider" "${selected[model]}" "${selected[thinking]}" "$pi_bin"
     log "Wrote Pi profile launchers (selected=${selected[name]})."
 }
 # <<< src/bootstrap/26_configure_launchers.bash <<<
