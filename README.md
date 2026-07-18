@@ -1,7 +1,7 @@
 # Generated autonomous-agent-bootstrap artifact
 
 Source branch: fix/pi-gateway-ultra
-Source commit: 98cc792ca26a8828409fc194c525e993949381fa
+Source commit: 5594acf73452124c56c11574d5d46db57126b719
 
 Curl this generated artifact with:
 
