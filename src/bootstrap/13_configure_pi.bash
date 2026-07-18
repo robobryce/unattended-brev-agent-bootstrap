@@ -1,7 +1,11 @@
 # ---------------------------------------------------------------------------
 # Configure Pi's generated inference-gateway model catalog, unattended
-# defaults, and local fast-mode extension.
+# defaults, local fast-mode extension, and local-only OpenTelemetry logging.
 # ---------------------------------------------------------------------------
+PI_OBSERVABILITY_ENV_CONTENT=$(cat <<'AAB_PI_OBSERVABILITY_ENV_EOF'
+__AAB_PI_OBSERVABILITY_ENV__
+AAB_PI_OBSERVABILITY_ENV_EOF
+)
 PI_FAST_MODE_EXTENSION_CONTENT=$(cat <<'AAB_PI_FAST_MODE_EXTENSION_EOF'
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { clampThinkingLevel, streamOpenAIResponses } from "@earendil-works/pi-ai/compat";
@@ -243,6 +247,17 @@ _write_pi_embedded_asset() {
 }
 
 configure_pi_extensions() {
+    _write_pi_embedded_asset "$PI_OBSERVABILITY_ENV_FILE" "$PI_OBSERVABILITY_ENV_CONTENT" 600
     _write_pi_embedded_asset "$PI_FAST_MODE_EXTENSION" "$PI_FAST_MODE_EXTENSION_CONTENT" 600
-    log "Wrote Pi fast-mode extension."
+
+    if [ -d "$PI_NPM_DIR/node_modules/pi-otel" ] \
+        || { [ -f "$PI_NPM_DIR/package.json" ] && grep -Fq '"pi-otel"' "$PI_NPM_DIR/package.json"; }; then
+        if ! command -v npm >/dev/null 2>&1; then
+            warn "npm is unavailable; unsupported Pi package pi-otel was not removed."
+            return
+        fi
+        log "Removing unsupported Pi package pi-otel."
+        npm uninstall --prefix "$PI_NPM_DIR" --ignore-scripts --no-audit --no-fund pi-otel
+    fi
+    log "Wrote Pi fast-mode and local OpenTelemetry configuration."
 }

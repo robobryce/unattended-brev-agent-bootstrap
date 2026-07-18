@@ -15,6 +15,7 @@ setup() {
           AAB_CODEX_DEFAULT_PROFILE AAB_CODEX_SERVICE_TIER \
           AAB_CODEX_AGENT_MAX_THREADS \
           AAB_PI_PROFILES AAB_PI_DEFAULT_PROFILE \
+          AAB_PI_OBSERVABILITY_ENV_FILE \
           AAB_INFERENCE_GATEWAY_URL AAB_INFERENCE_GATEWAY_API_KEY \
           AAB_ANTHROPIC_API_KEY AAB_OPENAI_API_KEY \
           AAB_BREV_API_KEY AAB_BREV_ORG_ID BREV_API_KEY BREV_ORG_ID \
@@ -22,6 +23,10 @@ setup() {
           AAB_GH_AUTH_SSH_PRIVATE_KEY_B64 AAB_GIT_SSH_SIGNING_PRIVATE_KEY_B64 \
           ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN \
           OPENAI_API_KEY GH_TOKEN GITHUB_TOKEN \
+          PI_TELEMETRY PI_TIMING PI_PATTY_BG_TASKS_DISABLE_CTRL_B \
+          PI_OTEL_LOG_DIR OTEL_SDK_DISABLED OTEL_SERVICE_NAME \
+          OTEL_TRACES_EXPORTER OTEL_METRICS_EXPORTER OTEL_LOGS_EXPORTER \
+          OTEL_RESOURCE_ATTRIBUTES OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT \
           AAB_AGENT_PLUGINS_FILE AAB_PI_PLUGINS_FILE \
           AAB_APT_PACKAGES_FILE AAB_APT_PACKAGES_URL \
           AAB_UV_TOOLS_FILE AAB_UV_TOOLS_URL
@@ -73,13 +78,18 @@ teardown() {
     [[ "$AGENT_PLUGINS_DEFAULT_CONTENT" != *"__AAB_AGENT_PLUGINS__"* ]]
 }
 
-@test "Pi package defaults and inline fast-mode extension are compiled into bootstrap.bash" {
+@test "Pi package defaults and local observability env are compiled into bootstrap.bash" {
     [ "$PI_PLUGINS_DEFAULT_CONTENT" = "$(cat "$REPO_ROOT/pi_plugins.txt")" ]
     [[ "$PI_PLUGINS_DEFAULT_CONTENT" != *"__AAB_PI_PLUGINS__"* ]]
+    [ "$PI_OBSERVABILITY_ENV_CONTENT" = "$(cat "$REPO_ROOT/src/pi/observability.env")" ]
+    [[ "$PI_OBSERVABILITY_ENV_CONTENT" != *"__AAB_PI_OBSERVABILITY_ENV__"* ]]
+    [[ "$PI_OBSERVABILITY_ENV_CONTENT" == *"OTEL_TRACES_EXPORTER=console"* ]]
     [[ "$PI_FAST_MODE_EXTENSION_CONTENT" == *'serviceTier: "priority"'* ]]
     [ "$(grep -Fxc 'npm:pi-list-tools@0.1.0' "$REPO_ROOT/pi_plugins.txt")" -eq 1 ]
-    [ "$(grep -Fxc 'npm:pi-otel@0.1.0' "$REPO_ROOT/pi_plugins.txt")" -eq 1 ]
-    [ ! -d "$REPO_ROOT/src/pi" ]
+    [ "$(grep -Ec '^git:github\.com/robobryce/pi-local-otel@[0-9a-f]{40}$' "$REPO_ROOT/pi_plugins.txt")" -eq 1 ]
+    ! grep -Eq '^npm:pi-otel(@|$)' "$REPO_ROOT/pi_plugins.txt"
+    [ ! -e "$REPO_ROOT/src/pi/otel-console.cjs" ]
+    [ ! -e "$REPO_ROOT/src/pi/local-otel.ts" ]
     grep -Fq 'git:github.com/nicobailon/pi-subagents@' "$REPO_ROOT/pi_plugins.txt"
     ! grep -Fq 'robobryce/pi-subagents' "$REPO_ROOT/pi_plugins.txt"
 }
@@ -1141,12 +1151,18 @@ SH
 }
 
 @test "configure_pi_models and configure_pi_launchers create pi-model aliases" {
-    mkdir -p "$HOME/.local/bin"
+    mkdir -p "$HOME/.local/bin" "$(dirname "$PI_OBSERVABILITY_ENV_FILE")"
+    cp "$REPO_ROOT/src/pi/observability.env" "$PI_OBSERVABILITY_ENV_FILE"
+    printf '\nexport AAB_TEST_PI_OBSERVABILITY=local-only\n' >> "$PI_OBSERVABILITY_ENV_FILE"
     cat > "$HOME/.local/bin/pi-aab-real" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$@" > "$TEST_HOME/pi-launcher-args"
 printf '%s\n' "\${AAB_PI_DEFAULT_PROFILE:-}" > "$TEST_HOME/pi-launcher-default-profile"
 printf '%s\n' "\${PI_PATTY_BG_TASKS_DISABLE_CTRL_B:-}" > "$TEST_HOME/pi-launcher-patty-disable-ctrl-b"
+printf '%s\n' "\${AAB_TEST_PI_OBSERVABILITY:-}" > "$TEST_HOME/pi-launcher-observability"
+printf '%s\n' "\${OTEL_SERVICE_NAME:-}" > "$TEST_HOME/pi-launcher-otel-service"
+printf '%s\n' "\${OTEL_TRACES_EXPORTER:-}" > "$TEST_HOME/pi-launcher-otel-traces-exporter"
+printf '%s\n' "\${OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT:-}" > "$TEST_HOME/pi-launcher-otel-content-capture"
 SH
     chmod +x "$HOME/.local/bin/pi-aab-real"
 
@@ -1177,6 +1193,10 @@ SH
     grep -Fxq 'xhigh' "$TEST_HOME/pi-launcher-args"
     ! grep -Fxq 'ultra' "$TEST_HOME/pi-launcher-args"
     [ "$(cat "$TEST_HOME/pi-launcher-patty-disable-ctrl-b")" = "1" ]
+    [ "$(cat "$TEST_HOME/pi-launcher-observability")" = "local-only" ]
+    [ "$(cat "$TEST_HOME/pi-launcher-otel-service")" = "pi-coding-agent" ]
+    [ "$(cat "$TEST_HOME/pi-launcher-otel-traces-exporter")" = "console" ]
+    [ "$(cat "$TEST_HOME/pi-launcher-otel-content-capture")" = "false" ]
 
     "$HOME/.local/bin/pi-gpt-5.6" install npm:example@1.0.0
     [ "$(sed -n '1p' "$TEST_HOME/pi-launcher-args")" = "install" ]
@@ -1300,11 +1320,31 @@ assert "trackingId" not in data and "lastChangelogVersion" not in data, data
 PY
 }
 
-@test "configure_pi_extensions writes inline fast mode" {
-    configure_pi_extensions
+@test "configure_pi_extensions writes local config and removes pi-otel" {
+    local fake_bin
+    fake_bin="$TEST_HOME/fake-bin"
+    mkdir -p "$fake_bin" "$PI_NPM_DIR/node_modules/pi-otel"
+    printf '{"dependencies":{"pi-otel":"0.1.0"}}\n' > "$PI_NPM_DIR/package.json"
+    cat > "$fake_bin/npm" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TEST_HOME/pi-npm-invocations"
+if [ "\${1:-}" = "uninstall" ]; then
+    rm -rf "$PI_NPM_DIR/node_modules/pi-otel"
+    printf '{"dependencies":{}}\n' > "$PI_NPM_DIR/package.json"
+fi
+SH
+    chmod +x "$fake_bin/npm"
 
-    [ -f "$PI_FAST_MODE_EXTENSION" ]
-    grep -Fq 'serviceTier: "priority"' "$PI_FAST_MODE_EXTENSION"
+    PATH="$fake_bin:$PATH" configure_pi_extensions
+
+    [ "$(cat "$PI_OBSERVABILITY_ENV_FILE")" = "$PI_OBSERVABILITY_ENV_CONTENT" ]
+    [ "$(cat "$PI_FAST_MODE_EXTENSION")" = "$PI_FAST_MODE_EXTENSION_CONTENT" ]
+    [ "$(stat -c '%a' "$PI_OBSERVABILITY_ENV_FILE")" = "600" ]
+    [ "$(stat -c '%a' "$PI_FAST_MODE_EXTENSION")" = "600" ]
+    [ ! -d "$PI_NPM_DIR/node_modules/pi-otel" ]
+    ! grep -Fq '"pi-otel"' "$PI_NPM_DIR/package.json"
+    grep -Eq '^uninstall .* pi-otel$' "$TEST_HOME/pi-npm-invocations"
+    ! grep -Eq '(^| )install( |$)' "$TEST_HOME/pi-npm-invocations"
 }
 
 @test "install_pi_plugins installs every non-comment source without profile flags" {
@@ -1329,7 +1369,7 @@ EOF
     [ "$(wc -l < "$TEST_HOME/pi-package-invocations")" -eq 2 ]
 }
 
-@test "install_pi_plugins installs the pinned list-tools and OTEL packages from defaults" {
+@test "install_pi_plugins installs pinned list-tools and local OTEL without pi-otel" {
     mkdir -p "$HOME/.local/bin"
     cat > "$HOME/.local/bin/pi-aab-real" <<SH
 #!/usr/bin/env bash
@@ -1340,7 +1380,8 @@ SH
     install_pi_plugins
 
     grep -Fxq 'install npm:pi-list-tools@0.1.0 --no-approve' "$TEST_HOME/pi-package-invocations"
-    grep -Fxq 'install npm:pi-otel@0.1.0 --no-approve' "$TEST_HOME/pi-package-invocations"
+    [ "$(grep -Ec '^install git:github\.com/robobryce/pi-local-otel@[0-9a-f]{40} --no-approve$' "$TEST_HOME/pi-package-invocations")" -eq 1 ]
+    ! grep -Eq '^install npm:pi-otel(@| |$)' "$TEST_HOME/pi-package-invocations"
 }
 
 setup_fake_codex() {
