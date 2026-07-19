@@ -1,7 +1,7 @@
 # Generated autonomous-agent-bootstrap artifact
 
 Source branch: fix/autocuda-private-install
-Source commit: f3f3ac89f03e09e4b474115d84b692c3aa757af6
+Source commit: 811ff8e1fb39b1375320b5cacb9bce360bd29855
 
 Curl this generated artifact with:
 
