@@ -1,7 +1,7 @@
 # Generated autonomous-agent-bootstrap artifact
 
 Source branch: replace/pi-local-otel
-Source commit: fc88a6b4bc203d5fbbde218afd0330a78446dd72
+Source commit: f2eec2f6ce3fe3fa27b9449a1e5cf10d9f29eac7
 
 Curl this generated artifact with:
 

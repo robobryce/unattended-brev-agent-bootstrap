@@ -2248,8 +2248,6 @@ PI_OBSERVABILITY_ENV_CONTENT=$(cat <<'AAB_PI_OBSERVABILITY_ENV_EOF'
 # Pi observability defaults. Pi launchers source this file so these variables
 # stay scoped to Pi processes and never affect unrelated tools.
 
-# Pi's separate anonymous install/update telemetry remains user-controlled.
-export PI_TELEMETRY="${PI_TELEMETRY:-1}"
 export PI_TIMING="${PI_TIMING:-0}"
 export PI_PATTY_BG_TASKS_DISABLE_CTRL_B="${PI_PATTY_BG_TASKS_DISABLE_CTRL_B:-1}"
 
