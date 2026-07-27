@@ -1,7 +1,7 @@
 # Generated autonomous-agent-bootstrap artifact
 
 Source branch: fix/brev-version-assertion
-Source commit: 39bc08d7a1b9ec0017b449bf679fb01c79b7fd35
+Source commit: cce4a6b5a020c851c86f8aaedb91d6460409f09f
 
 Curl this generated artifact with:
 
