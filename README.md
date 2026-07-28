@@ -1,7 +1,7 @@
 # Generated autonomous-agent-bootstrap artifact
 
 Source branch: add/pr-description-guidance
-Source commit: a9f949d7d6d4ce374440db6f01ccc4a5eab33388
+Source commit: aeed2eccae8579f1d9806867ff8c347ec1c06708
 
 Curl this generated artifact with:
 
