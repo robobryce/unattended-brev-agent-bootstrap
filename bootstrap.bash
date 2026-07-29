@@ -2157,6 +2157,7 @@ check_for_update_on_startup = false
 [features]
 fast_mode = ${fast_mode}
 default_mode_request_user_input = false
+tool_suggest = false
 
 [otel]
 environment = "dev"
@@ -3006,9 +3007,9 @@ _render_agent_rules() {
 - You are in a safe sandbox without credentials that could cause serious harm.
 
  ## Write substantive PR descriptions
-
+ 
  Write substantive PR descriptions in plain language without jargon. Explain both the "why" and the "how". Provide concrete examples. Explain design decisions. Summarize all changes made, not just their effect.
-
+ 
 ## Always use the configured git identity
 
 Always commit and tag with the git identity this machine is configured with, and don't override it with `git -c`, `--author=`, `GIT_AUTHOR_*` / `GIT_COMMITTER_*` env vars, or a repo-local `git config`.

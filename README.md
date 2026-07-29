@@ -1,7 +1,7 @@
 # Generated autonomous-agent-bootstrap artifact
 
 Source branch: refactor/flatten-bootstrap-source
-Source commit: a30079aa138513f01fba6ae9fd7da1f43fc0d0f2
+Source commit: 9b53b0325936349aae9f076678ea9ef9f44000a3
 
 Curl this generated artifact with:
 
