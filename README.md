@@ -1,7 +1,7 @@
 # Generated autonomous-agent-bootstrap artifact
 
 Source branch: refactor/embed-pi-observability
-Source commit: f53a3d3463d3cd8e000113b3870676cdb44dbbac
+Source commit: 00f3ee4858e93947a3ada2552903fd7cf0f7b444
 
 Curl this generated artifact with:
 

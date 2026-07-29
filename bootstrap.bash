@@ -2261,7 +2261,7 @@ configure_codex() {
 # >>> src/13_configure_pi.bash >>>
 # ---------------------------------------------------------------------------
 # Configure Pi's generated inference-gateway model catalog, unattended
-# defaults, and bootstrap-generated local fast-mode provider extension.
+# defaults and local fast-mode extension.
 # ---------------------------------------------------------------------------
 PI_FAST_MODE_EXTENSION_CONTENT=$(cat <<'AAB_PI_FAST_MODE_EXTENSION_EOF'
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -2494,14 +2494,18 @@ PY
     log "Wrote ${PI_SETTINGS_FILE} with unattended Pi defaults."
 }
 
-configure_pi_fast_mode_extension() {
-    local tmp
-    mkdir -p "$(dirname "$PI_FAST_MODE_EXTENSION")"
-    tmp=$(mktemp "${PI_FAST_MODE_EXTENSION}.tmp.XXXXXX")
-    printf '%s\n' "$PI_FAST_MODE_EXTENSION_CONTENT" > "$tmp"
-    chmod 600 "$tmp"
-    mv -f "$tmp" "$PI_FAST_MODE_EXTENSION"
-    log "Wrote Pi fast-mode provider extension."
+_write_pi_embedded_asset() {
+    local path="$1" content="$2" mode="$3" tmp
+    mkdir -p "$(dirname "$path")"
+    tmp=$(mktemp "${path}.tmp.XXXXXX")
+    printf '%s\n' "$content" > "$tmp"
+    chmod "$mode" "$tmp"
+    mv -f "$tmp" "$path"
+}
+
+configure_pi_extensions() {
+    _write_pi_embedded_asset "$PI_FAST_MODE_EXTENSION" "$PI_FAST_MODE_EXTENSION_CONTENT" 600
+    log "Wrote Pi fast-mode configuration."
 }
 # <<< src/13_configure_pi.bash <<<
 
@@ -3520,7 +3524,6 @@ if [ -f "$env_file" ]; then
     set +a
 fi
 
-# Disable startup timing output by default and keep Pi's built-in Ctrl+B binding.
 export PI_TIMING="${PI_TIMING:-0}"
 export PI_PATTY_BG_TASKS_DISABLE_CTRL_B="${PI_PATTY_BG_TASKS_DISABLE_CTRL_B:-1}"
 
@@ -3837,7 +3840,7 @@ main() {
     configure_codex
     configure_pi_models
     configure_pi_settings
-    configure_pi_fast_mode_extension
+    configure_pi_extensions
     configure_git
     configure_auth_ssh_key
     configure_signing_ssh_key
