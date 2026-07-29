@@ -1,7 +1,7 @@
 # Generated autonomous-agent-bootstrap artifact
 
 Source branch: refactor/untrack-bootstrap-artifact
-Source commit: 9ec916b374cdc6650ebe15bf22750e27ef8459b4
+Source commit: 130d6f985a8551cb136563b33c5dcc13ff6fe348
 
 Curl this generated artifact with:
 
