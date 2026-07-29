@@ -2261,7 +2261,7 @@ configure_codex() {
 # >>> src/13_configure_pi.bash >>>
 # ---------------------------------------------------------------------------
 # Configure Pi's generated inference-gateway model catalog, unattended
-# defaults and local fast-mode extension.
+# defaults, local fast-mode extension.
 # ---------------------------------------------------------------------------
 PI_FAST_MODE_EXTENSION_CONTENT=$(cat <<'AAB_PI_FAST_MODE_EXTENSION_EOF'
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
