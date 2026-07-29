@@ -2491,6 +2491,7 @@ PY
     rm -f "$records"
     chmod 600 "$tmp"
     mv -f "$tmp" "$PI_SETTINGS_FILE"
+    rm -f "${AAB_SHELL_CONFIG_DIR}/pi-observability.env"
     log "Wrote ${PI_SETTINGS_FILE} with unattended Pi defaults."
 }
 
